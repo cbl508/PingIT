@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:pingit/screens/home_screen.dart';
+import 'package:pingit/services/logging_service.dart';
 import 'package:pingit/services/notification_service.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await LoggingService().init();
   await NotificationService().init();
+  LoggingService().info('PingIT starting up');
   runApp(const MyApp());
 }
 

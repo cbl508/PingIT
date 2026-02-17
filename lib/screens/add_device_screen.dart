@@ -3,10 +3,16 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:pingit/models/device_model.dart';
 
 class AddDeviceScreen extends StatefulWidget {
-  const AddDeviceScreen({super.key, this.device, this.groups = const []});
+  const AddDeviceScreen({
+    super.key,
+    this.device,
+    this.groups = const [],
+    this.existingDevices = const [],
+  });
 
   final Device? device;
   final List<DeviceGroup> groups;
+  final List<Device> existingDevices;
 
   @override
   State<AddDeviceScreen> createState() => _AddDeviceScreenState();
@@ -18,6 +24,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   late TextEditingController _addressController;
   late TextEditingController _tagsController;
   late TextEditingController _portController;
+  late TextEditingController _latencyThresholdController;
+  late TextEditingController _packetLossThresholdController;
 
   late int _selectedInterval;
   late int _selectedThreshold;
@@ -42,6 +50,12 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _portController = TextEditingController(
       text: widget.device?.port?.toString() ?? '80',
     );
+    _latencyThresholdController = TextEditingController(
+      text: widget.device?.latencyThreshold?.toStringAsFixed(0) ?? '',
+    );
+    _packetLossThresholdController = TextEditingController(
+      text: widget.device?.packetLossThreshold?.toStringAsFixed(0) ?? '',
+    );
     _selectedInterval = widget.device?.interval ?? 10;
     _selectedThreshold = widget.device?.failureThreshold ?? 1;
     _selectedGroupId = widget.device?.groupId;
@@ -55,6 +69,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _addressController.dispose();
     _tagsController.dispose();
     _portController.dispose();
+    _latencyThresholdController.dispose();
+    _packetLossThresholdController.dispose();
     super.dispose();
   }
 
@@ -72,6 +88,9 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           ? int.tryParse(_portController.text)
           : null;
 
+      final latencyThreshold = double.tryParse(_latencyThresholdController.text.trim());
+      final packetLossThreshold = double.tryParse(_packetLossThresholdController.text.trim());
+
       if (widget.device != null) {
         widget.device!.name = trimmedName;
         widget.device!.address = trimmedAddress;
@@ -82,6 +101,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         widget.device!.type = _selectedType;
         widget.device!.checkType = _selectedCheckType;
         widget.device!.port = port;
+        widget.device!.latencyThreshold = latencyThreshold;
+        widget.device!.packetLossThreshold = packetLossThreshold;
         Navigator.of(context).pop(widget.device);
       } else {
         final newDevice = Device(
@@ -94,6 +115,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           type: _selectedType,
           checkType: _selectedCheckType,
           port: port,
+          latencyThreshold: latencyThreshold,
+          packetLossThreshold: packetLossThreshold,
         );
         Navigator.of(context).pop(newDevice);
       }
@@ -361,6 +384,52 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             setState(() => _selectedThreshold = val!),
                       ),
                       const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _latencyThresholdController,
+                              keyboardType: TextInputType.number,
+                              style: GoogleFonts.inter(),
+                              decoration: InputDecoration(
+                                labelText: 'Latency Threshold (ms)',
+                                labelStyle: GoogleFonts.inter(),
+                                prefixIcon: const Icon(Icons.speed),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                helperText: 'Mark degraded above this latency',
+                              ),
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return null;
+                                final v = double.tryParse(val.trim());
+                                if (v == null || v <= 0) return 'Must be a positive number';
+                                return null;
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _packetLossThresholdController,
+                              keyboardType: TextInputType.number,
+                              style: GoogleFonts.inter(),
+                              decoration: InputDecoration(
+                                labelText: 'Packet Loss Threshold (%)',
+                                labelStyle: GoogleFonts.inter(),
+                                prefixIcon: const Icon(Icons.leak_add),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                helperText: 'Mark degraded above this loss %',
+                              ),
+                              validator: (val) {
+                                if (val == null || val.trim().isEmpty) return null;
+                                final v = double.tryParse(val.trim());
+                                if (v == null || v < 0 || v > 100) return 'Must be 0-100';
+                                return null;
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
                       _buildField(
                         _tagsController,
                         'Metadata Tags (comma separated)',
@@ -495,6 +564,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
             return _selectedCheckType == CheckType.http
                 ? 'Enter a valid host or URL'
                 : 'Enter a valid host or IP';
+          }
+          // Duplicate address check
+          final normalizedValue = value.toLowerCase();
+          final isDuplicate = widget.existingDevices.any((d) {
+            // Allow own address when editing
+            if (widget.device != null && d.id == widget.device!.id) return false;
+            return d.address.trim().toLowerCase() == normalizedValue;
+          });
+          if (isDuplicate) {
+            return 'This address is already being monitored';
           }
         }
 

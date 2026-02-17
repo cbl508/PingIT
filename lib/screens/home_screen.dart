@@ -18,6 +18,7 @@ import 'package:pingit/services/notification_service.dart';
 import 'package:pingit/services/email_service.dart';
 import 'package:pingit/services/webhook_service.dart';
 import 'package:pingit/services/update_service.dart';
+import 'package:pingit/services/logging_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -34,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final NotificationService _notificationService = NotificationService();
   final EmailService _emailService = EmailService();
   final WebhookService _webhookService = WebhookService();
+  final LoggingService _log = LoggingService();
 
   List<Device> _devices = [];
   List<DeviceGroup> _groups = [];
@@ -44,6 +46,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isSaving = false;
   bool _pendingSave = false;
   QuietHoursSettings _quietHours = QuietHoursSettings();
+
+  // Update banner state
+  UpdateInfo? _startupUpdateInfo;
+
+  // Status filter from HUD click
+  DeviceStatus? _hudStatusFilter;
 
   @override
   void initState() {
@@ -118,6 +126,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _isLoading = false;
     });
 
+    _log.info('PingIT started', data: {'devices': devices.length, 'groups': groups.length});
     _checkForUpdates();
   }
 
@@ -125,16 +134,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       final update = await UpdateService().checkForUpdate();
       if (update != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('PingIT v${update.version} is available'),
-            action: SnackBarAction(
-              label: 'VIEW',
-              onPressed: () => setState(() => _selectedIndex = 3),
-            ),
-            duration: const Duration(seconds: 8),
-          ),
-        );
+        setState(() => _startupUpdateInfo = update);
       }
     } catch (e) {
       // Silently ignore update check failures on startup
@@ -143,13 +143,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _updateDeviceStatuses() async {
     if (_devices.isEmpty || _isPolling) return;
-    // Set flag BEFORE any async work to prevent race conditions.
     _isPolling = true;
     try {
+      bool hadCriticalTransition = false;
       await _pingService.pingAllDevices(
         _devices,
         onStatusChanged: (d, oldS, newS) {
           if (oldS != DeviceStatus.unknown && oldS != newS) {
+            _log.info('Status change: ${d.name}', data: {
+              'address': d.address,
+              'from': oldS.name,
+              'to': newS.name,
+            });
+
             // Intelligent Alert Suppression: don't alert if parent is down
             bool shouldSuppress = false;
             if (d.parentId != null && newS == DeviceStatus.offline) {
@@ -159,14 +165,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               );
               if (parent != null && parent.status == DeviceStatus.offline) {
                 shouldSuppress = true;
-                debugPrint('Alert suppressed for ${d.name} because parent ${parent.name} is offline.');
               }
             }
 
             // Quiet hours suppression
             if (_quietHours.isCurrentlyQuiet()) {
               shouldSuppress = true;
-              debugPrint('Alert suppressed for ${d.name} during quiet hours.');
             }
 
             if (!shouldSuppress) {
@@ -177,15 +181,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               unawaited(_emailService.sendAlert(d, oldS, newS));
               unawaited(_webhookService.sendAlert(d, oldS, newS));
             }
+
+            // Critical transitions save immediately
+            if (newS == DeviceStatus.offline ||
+                (oldS == DeviceStatus.offline && newS == DeviceStatus.online)) {
+              hadCriticalTransition = true;
+            }
           }
         },
       );
-      _scheduleSave();
+
+      if (hadCriticalTransition) {
+        unawaited(_saveAll());
+      } else {
+        _scheduleSave();
+      }
+
       if (mounted) {
         setState(() {});
       }
     } catch (e) {
-      debugPrint('Failed to update statuses: $e');
+      _log.error('Failed to update statuses', data: {'error': '$e'});
     } finally {
       _isPolling = false;
     }
@@ -217,7 +233,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await _storageService.saveGroups(_groups);
       } while (_pendingSave);
     } catch (e) {
-      debugPrint('Failed to persist data: $e');
+      _log.error('Failed to persist data', data: {'error': '$e'});
     } finally {
       _isSaving = false;
     }
@@ -225,6 +241,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _addGroup() {
     final controller = TextEditingController();
+    void doCreate() {
+      if (controller.text.isNotEmpty) {
+        setState(() {
+          _groups.add(
+            DeviceGroup(
+              id: DateTime.now().toString(),
+              name: controller.text,
+            ),
+          );
+        });
+        unawaited(_saveAll());
+        Navigator.pop(context);
+      }
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -234,10 +265,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
         content: TextField(
           controller: controller,
+          autofocus: true,
           decoration: const InputDecoration(
             hintText: 'e.g., London Data Center',
           ),
           style: GoogleFonts.inter(),
+          onSubmitted: (_) => doCreate(),
         ),
         actions: [
           TextButton(
@@ -245,20 +278,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                setState(() {
-                  _groups.add(
-                    DeviceGroup(
-                      id: DateTime.now().toString(),
-                      name: controller.text,
-                    ),
-                  );
-                });
-                unawaited(_saveAll());
-                Navigator.pop(context);
-              }
-            },
+            onPressed: doCreate,
             child: const Text('Create Group'),
           ),
         ],
@@ -268,6 +288,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   void _renameGroup(DeviceGroup group) {
     final controller = TextEditingController(text: group.name);
+    void doRename() {
+      if (controller.text.isNotEmpty) {
+        setState(() {
+          group.name = controller.text;
+        });
+        unawaited(_saveAll());
+        Navigator.pop(context);
+      }
+    }
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -277,8 +307,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
         content: TextField(
           controller: controller,
+          autofocus: true,
           decoration: const InputDecoration(hintText: 'Group Name'),
           style: GoogleFonts.inter(),
+          onSubmitted: (_) => doRename(),
         ),
         actions: [
           TextButton(
@@ -286,15 +318,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                setState(() {
-                  group.name = controller.text;
-                });
-                unawaited(_saveAll());
-                Navigator.pop(context);
-              }
-            },
+            onPressed: doRename,
             child: const Text('Save'),
           ),
         ],
@@ -305,36 +329,55 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _deleteGroup(DeviceGroup group) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Delete Group?',
-          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-        ),
-        content: Text(
-          'Are you sure you want to delete "${group.name}"? Devices in this group will become unassigned.',
-          style: GoogleFonts.inter(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              setState(() {
-                _groups.remove(group);
-                for (var device in _devices) {
-                  if (device.groupId == group.id) {
-                    device.groupId = null;
-                  }
+      builder: (dialogContext) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): () {
+            setState(() {
+              _groups.remove(group);
+              for (var device in _devices) {
+                if (device.groupId == group.id) {
+                  device.groupId = null;
                 }
-              });
-              unawaited(_saveAll());
-              Navigator.pop(context);
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              }
+            });
+            unawaited(_saveAll());
+            Navigator.pop(dialogContext);
+          },
+        },
+        child: Focus(
+          autofocus: true,
+          child: AlertDialog(
+            title: Text(
+              'Delete Group?',
+              style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+            ),
+            content: Text(
+              'Are you sure you want to delete "${group.name}"? Devices in this group will become unassigned.',
+              style: GoogleFonts.inter(),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _groups.remove(group);
+                    for (var device in _devices) {
+                      if (device.groupId == group.id) {
+                        device.groupId = null;
+                      }
+                    }
+                  });
+                  unawaited(_saveAll());
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -344,7 +387,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       context,
       MaterialPageRoute(
         builder: (context) =>
-            AddDeviceScreen(device: existingDevice, groups: _groups),
+            AddDeviceScreen(
+              device: existingDevice,
+              groups: _groups,
+              existingDevices: _devices,
+            ),
       ),
     );
 
@@ -373,7 +420,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       context,
       MaterialPageRoute(
         builder: (context) =>
-            DeviceDetailsScreen(device: device, groups: _groups),
+            DeviceDetailsScreen(
+              device: device,
+              groups: _groups,
+              allDevices: _devices,
+            ),
       ),
     );
 
@@ -389,20 +440,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _handleBulkDelete(Set<String> ids) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Delete ${ids.length} devices?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-        content: Text('This action cannot be undone.', style: GoogleFonts.inter()),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () {
-              setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
-              unawaited(_saveAll());
-              Navigator.pop(context);
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+      builder: (dialogContext) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): () {
+            setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
+            unawaited(_saveAll());
+            Navigator.pop(dialogContext);
+          },
+        },
+        child: Focus(
+          autofocus: true,
+          child: AlertDialog(
+            title: Text('Delete ${ids.length} devices?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            content: Text('This action cannot be undone.', style: GoogleFonts.inter()),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () {
+                  setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
+                  unawaited(_saveAll());
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -495,64 +558,97 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
               const VerticalDivider(thickness: 1, width: 1),
               Expanded(
-                child: IndexedStack(
-                  index: _selectedIndex,
+                child: Column(
                   children: [
-                    DeviceListScreen(
-                      devices: _devices,
-                      groups: _groups,
-                      isLoading: _isLoading,
-                      onUpdate: () => unawaited(_saveAll()),
-                      onGroupUpdate: () => unawaited(_saveAll()),
-                      onAddDevice: () => _navigateToAddDeviceScreen(),
-                      onQuickScan: (addr) => _navigateToAddDeviceScreen(
-                        existingDevice: Device(name: 'New Node', address: addr),
+                    // Update banner — takes layout space, not floating
+                    if (_startupUpdateInfo != null)
+                      MaterialBanner(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        leading: const Icon(Icons.system_update, color: Color(0xFF3B82F6)),
+                        content: Text(
+                          'PingIT v${_startupUpdateInfo!.version} is available',
+                          style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => setState(() {
+                              _selectedIndex = 3;
+                              _startupUpdateInfo = null;
+                            }),
+                            child: const Text('VIEW'),
+                          ),
+                          TextButton(
+                            onPressed: () => setState(() => _startupUpdateInfo = null),
+                            child: const Text('DISMISS'),
+                          ),
+                        ],
                       ),
-                      onAddGroup: _addGroup,
-                      onRenameGroup: _renameGroup,
-                      onDeleteGroup: _deleteGroup,
-                      onEditDevice: (d) =>
-                          _navigateToAddDeviceScreen(existingDevice: d),
-                      onTapDevice: _navigateToDetailsScreen,
-                      onBulkDelete: _handleBulkDelete,
-                      onBulkMoveToGroup: _handleBulkMoveToGroup,
-                    ),
-                    TopologyScreen(
-                      devices: _devices,
-                      onUpdate: () => unawaited(_saveAll()),
-                    ),
-                    LogsScreen(
-                      devices: _devices,
-                      groups: _groups,
-                      onTapDevice: _navigateToDetailsScreen,
-                    ),
-                    SettingsScreen(
-                      devices: _devices,
-                      groups: _groups,
-                      onImported: (newDevices) {
-                        setState(() {
-                          final existingAddresses = _devices
-                              .map((d) => d.address.trim().toLowerCase())
-                              .toSet();
-                          final uniqueDevices = newDevices.where(
-                            (d) => existingAddresses.add(d.address.trim().toLowerCase()),
-                          );
-                          _devices.addAll(uniqueDevices);
-                        });
-                        unawaited(_saveAll());
-                      },
-                      onEmailSettingsChanged: (settings) {
-                        unawaited(_storageService.saveEmailSettings(settings));
-                        _emailService.updateSettings(settings);
-                      },
-                      onWebhookSettingsChanged: (settings) {
-                        unawaited(_storageService.saveWebhookSettings(settings));
-                        _webhookService.updateSettings(settings);
-                      },
-                      onQuietHoursChanged: (settings) {
-                        setState(() => _quietHours = settings);
-                        unawaited(_storageService.saveQuietHours(settings));
-                      },
+                    Expanded(
+                      child: IndexedStack(
+                        index: _selectedIndex,
+                        children: [
+                          DeviceListScreen(
+                            devices: _devices,
+                            groups: _groups,
+                            isLoading: _isLoading,
+                            onUpdate: () => unawaited(_saveAll()),
+                            onGroupUpdate: () => unawaited(_saveAll()),
+                            onAddDevice: () => _navigateToAddDeviceScreen(),
+                            onQuickScan: (addr) => _navigateToAddDeviceScreen(
+                              existingDevice: Device(name: 'New Node', address: addr),
+                            ),
+                            onAddGroup: _addGroup,
+                            onRenameGroup: _renameGroup,
+                            onDeleteGroup: _deleteGroup,
+                            onEditDevice: (d) =>
+                                _navigateToAddDeviceScreen(existingDevice: d),
+                            onTapDevice: _navigateToDetailsScreen,
+                            onBulkDelete: _handleBulkDelete,
+                            onBulkMoveToGroup: _handleBulkMoveToGroup,
+                            statusFilter: _hudStatusFilter,
+                            onStatusFilterChanged: (filter) {
+                              setState(() => _hudStatusFilter = filter);
+                            },
+                          ),
+                          TopologyScreen(
+                            devices: _devices,
+                            onUpdate: () => unawaited(_saveAll()),
+                          ),
+                          LogsScreen(
+                            devices: _devices,
+                            groups: _groups,
+                            onTapDevice: _navigateToDetailsScreen,
+                          ),
+                          SettingsScreen(
+                            devices: _devices,
+                            groups: _groups,
+                            onImported: (newDevices) {
+                              setState(() {
+                                final existingAddresses = _devices
+                                    .map((d) => d.address.trim().toLowerCase())
+                                    .toSet();
+                                final uniqueDevices = newDevices.where(
+                                  (d) => existingAddresses.add(d.address.trim().toLowerCase()),
+                                );
+                                _devices.addAll(uniqueDevices);
+                              });
+                              unawaited(_saveAll());
+                            },
+                            onEmailSettingsChanged: (settings) {
+                              unawaited(_storageService.saveEmailSettings(settings));
+                              _emailService.updateSettings(settings);
+                            },
+                            onWebhookSettingsChanged: (settings) {
+                              unawaited(_storageService.saveWebhookSettings(settings));
+                              _webhookService.updateSettings(settings);
+                            },
+                            onQuietHoursChanged: (settings) {
+                              setState(() => _quietHours = settings);
+                              unawaited(_storageService.saveQuietHours(settings));
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),

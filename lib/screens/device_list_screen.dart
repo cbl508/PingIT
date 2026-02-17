@@ -1,12 +1,11 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/widgets/scan_dialog.dart';
 
 enum SortOption { name, status, latency, health }
 
@@ -27,6 +26,8 @@ class DeviceListScreen extends StatefulWidget {
     required this.onTapDevice,
     required this.onBulkDelete,
     required this.onBulkMoveToGroup,
+    this.statusFilter,
+    this.onStatusFilterChanged,
   });
 
   final List<Device> devices;
@@ -43,6 +44,8 @@ class DeviceListScreen extends StatefulWidget {
   final Function(Device) onTapDevice;
   final Function(Set<String>) onBulkDelete;
   final Function(Set<String>) onBulkMoveToGroup;
+  final DeviceStatus? statusFilter;
+  final Function(DeviceStatus?)? onStatusFilterChanged;
 
   @override
   State<DeviceListScreen> createState() => _DeviceListScreenState();
@@ -54,6 +57,13 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   int _touchedIndex = -1;
   bool _isMultiSelect = false;
   final Set<String> _selectedIds = {};
+  Timer? _searchDebounce;
+
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
 
   void _toggleMultiSelect() {
     setState(() {
@@ -79,13 +89,29 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     });
   }
 
+  void _setStatusFilter(DeviceStatus? status) {
+    widget.onStatusFilterChanged?.call(status);
+  }
+
   List<Device> _getFilteredDevices(String? groupId) {
     return widget.devices.where((d) {
       final matchesGroup = d.groupId == groupId;
       final matchesSearch =
           d.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
           d.address.toLowerCase().contains(_searchQuery.toLowerCase());
-      return matchesGroup && matchesSearch;
+
+      // Apply status filter from HUD click
+      bool matchesStatusFilter = true;
+      if (widget.statusFilter != null) {
+        if (widget.statusFilter == DeviceStatus.unknown) {
+          // "unknown" used as sentinel for paused filter
+          matchesStatusFilter = d.isPaused;
+        } else {
+          matchesStatusFilter = d.status == widget.statusFilter && !d.isPaused;
+        }
+      }
+
+      return matchesGroup && matchesSearch && matchesStatusFilter;
     }).toList()..sort((a, b) {
       switch (_sortOption) {
         case SortOption.name:
@@ -94,11 +120,15 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           if (a.status == b.status) return a.name.compareTo(b.name);
           if (a.status == DeviceStatus.offline) return -1;
           if (b.status == DeviceStatus.offline) return 1;
-          return 0;
+          if (a.status == DeviceStatus.degraded) return -1;
+          if (b.status == DeviceStatus.degraded) return 1;
+          return a.name.compareTo(b.name);
         case SortOption.latency:
-          return (b.lastLatency ?? 0).compareTo(a.lastLatency ?? 0);
+          final cmp = (b.lastLatency ?? 0).compareTo(a.lastLatency ?? 0);
+          return cmp != 0 ? cmp : a.name.compareTo(b.name);
         case SortOption.health:
-          return b.stabilityScore.compareTo(a.stabilityScore);
+          final cmp = b.stabilityScore.compareTo(a.stabilityScore);
+          return cmp != 0 ? cmp : a.name.compareTo(b.name);
       }
     });
   }
@@ -162,10 +192,10 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             _buildActionItem(
               context: context,
               icon: Icons.radar_outlined,
-              label: 'Quick Scan',
+              label: 'Scan',
               color: isDark ? const Color(0xFF1E293B) : Colors.white,
               textColor: Theme.of(context).colorScheme.primary,
-              onPressed: _showQuickScanDialog,
+              onPressed: _showScanDialog,
             ),
             const SizedBox(width: 8),
             _buildActionItem(
@@ -199,6 +229,30 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                       .fade(duration: 500.ms)
                       .slideY(begin: -0.2, end: 0),
                 ),
+                // Status filter chip
+                if (widget.statusFilter != null)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Chip(
+                            avatar: Icon(
+                              _getStatusIcon(widget.statusFilter!),
+                              size: 16,
+                              color: _getStatusColor(widget.statusFilter!),
+                            ),
+                            label: Text(
+                              'Showing: ${_getStatusLabel(widget.statusFilter!)}',
+                              style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 12),
+                            ),
+                            deleteIcon: const Icon(Icons.close, size: 16),
+                            onDeleted: () => _setStatusFilter(null),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 SliverToBoxAdapter(
                   child: _buildSearchBar()
                       .animate()
@@ -225,207 +279,44 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
   }
 
-  void _showQuickScanDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Quick Deep Scan',
-          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Enter a hostname or IP address to perform a comprehensive security and service scan.',
-              style: GoogleFonts.inter(fontSize: 13, color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              style: GoogleFonts.jetBrainsMono(),
-              decoration: const InputDecoration(
-                hintText: 'e.g. 192.168.1.1 or google.com',
-                prefixIcon: Icon(Icons.public),
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                final addr = controller.text.trim();
-                Navigator.pop(context);
-                _runQuickScan(addr);
-              }
-            },
-            child: const Text('Start Scan'),
-          ),
-        ],
-      ),
-    );
+  String _getStatusLabel(DeviceStatus status) {
+    if (status == DeviceStatus.unknown) return 'PAUSED';
+    return status.name.toUpperCase();
   }
 
-  Future<void> _runQuickScan(String address) async {
-    final StreamController<String> logStream = StreamController<String>();
-    final List<String> lines = [
-      '[SYSTEM] Initializing External Deep Scan...',
-      '[TARGET] $address',
-      '[CMD] nmap -sV -O -T4 $address',
-      '',
-      'Starting Nmap (service/OS detection)...',
-    ];
-    final scrollController = ScrollController();
-
-    Process? process;
-    StreamSubscription<String>? stdoutSub;
-    StreamSubscription<String>? stderrSub;
-    bool isClosed = false;
-
-    void emit(String message) {
-      if (!isClosed) {
-        logStream.add(message);
-      }
+  IconData _getStatusIcon(DeviceStatus status) {
+    switch (status) {
+      case DeviceStatus.online: return Icons.check_circle_outline;
+      case DeviceStatus.degraded: return Icons.warning_amber_rounded;
+      case DeviceStatus.offline: return Icons.error_outline;
+      case DeviceStatus.unknown: return Icons.pause_circle_outline;
     }
+  }
 
-    Future<void> closeStream() async {
-      if (!isClosed) {
-        isClosed = true;
-        await logStream.close();
-      }
+  Color _getStatusColor(DeviceStatus status) {
+    switch (status) {
+      case DeviceStatus.online: return const Color(0xFF10B981);
+      case DeviceStatus.degraded: return const Color(0xFFF59E0B);
+      case DeviceStatus.offline: return const Color(0xFFEF4444);
+      case DeviceStatus.unknown: return const Color(0xFF94A3B8);
     }
+  }
 
-    void killProcess() {
-      process?.kill();
-      process = null;
-    }
-
-    try {
-      process = await Process.start('nmap', ['-sV', '-O', '-T4', address],
-          runInShell: Platform.isWindows);
-      stdoutSub = process!.stdout
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen((line) {
-        if (line.trim().isNotEmpty) {
-          lines.add(line.trim());
-          emit(line);
-        }
-      }, onError: (e) {
-        lines.add('[SYSTEM ERR] Decoding error: $e');
-        emit('ERROR');
-      });
-      stderrSub = process!.stderr
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen((line) {
-        if (line.trim().isNotEmpty) {
-          lines.add('[SYSTEM ERR] $line');
-          emit(line);
-        }
-      }, onError: (e) {
-        lines.add('[SYSTEM ERR] Decoding error: $e');
-        emit('ERROR');
-      });
-      process!.exitCode.then((code) async {
-        lines.add('');
-        lines.add(
-          code == 0
-              ? '[SYSTEM] Scan completed.'
-              : '[SYSTEM] Scan failed (code $code).',
-        );
-        emit('DONE');
-        await closeStream();
-      });
-    } catch (e) {
-      lines.add('[ERROR] "nmap" utility not found.');
-      emit('ERROR');
-      await closeStream();
-    }
-    if (!mounted) return;
-
-    await showDialog(
+  void _showScanDialog() {
+    showScanInputDialog(
       context: context,
-      builder: (context) => StreamBuilder<String>(
-        stream: logStream.stream,
-        builder: (context, snapshot) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (scrollController.hasClients) {
-              scrollController.animateTo(
-                scrollController.position.maxScrollExtent,
-                duration: 200.ms,
-                curve: Curves.easeOut,
-              );
-            }
-          });
-
-          return AlertDialog(
-            title: Text(
-              'External Infrastructure Scan',
-              style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-            ),
-            backgroundColor: const Color(0xFF0F172A),
-            content: Container(
-              width: 700,
-              height: 500,
-              decoration: BoxDecoration(
-                color: Colors.black,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-              ),
-              padding: const EdgeInsets.all(16),
-              child: ListView.builder(
-                controller: scrollController,
-                itemCount: lines.length,
-                itemBuilder: (context, i) => Text(
-                  lines[i],
-                  style: GoogleFonts.jetBrainsMono(
-                    color: lines[i].contains('[SYSTEM ERR]')
-                        ? Colors.redAccent
-                        : const Color(0xFF34D399),
-                    fontSize: 12,
-                  ),
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () async {
-                  killProcess();
-                  Navigator.pop(context);
-                },
-                child: const Text('DISMISS'),
-              ),
-              if (snapshot.data == 'DONE')
-                FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    widget.onQuickScan(address);
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('ADD AS NODE'),
-                ),
-            ],
-          );
-        },
-      ),
+      onStart: (address, type) async {
+        final result = await runScanDialog(
+          context: context,
+          address: address,
+          scanType: type,
+          showAddButton: true,
+        );
+        if (result != null && mounted) {
+          widget.onQuickScan(address);
+        }
+      },
     );
-
-    // Ensure process is killed when dialog closes for any reason
-    killProcess();
-    await stdoutSub?.cancel();
-    await stderrSub?.cancel();
-    await closeStream();
-    scrollController.dispose();
   }
 
   Widget _buildEmptyState(BuildContext context) {
@@ -524,7 +415,12 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 ),
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16),
               ),
-              onChanged: (val) => setState(() => _searchQuery = val),
+              onChanged: (val) {
+                _searchDebounce?.cancel();
+                _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+                  setState(() => _searchQuery = val);
+                });
+              },
             ),
           ),
           const SizedBox(width: 12),
@@ -575,6 +471,9 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    // Map pie section index to DeviceStatus for click handling
+    final sectionStatuses = [DeviceStatus.online, DeviceStatus.offline, DeviceStatus.degraded, DeviceStatus.unknown];
+
     return Container(
       margin: const EdgeInsets.all(16.0),
       padding: const EdgeInsets.all(24.0),
@@ -609,48 +508,64 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (total > 0)
-                Container(
-                  width: 140,
-                  height: 140,
-                  margin: const EdgeInsets.only(right: 32),
-                  child: Stack(
-                    children: [
-                      PieChart(
-                        PieChartData(
-                          pieTouchData: PieTouchData(
-                            touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                              setState(() {
-                                if (!event.isInterestedForInteractions ||
-                                    pieTouchResponse == null ||
-                                    pieTouchResponse.touchedSection == null) {
-                                  _touchedIndex = -1;
-                                  return;
+                GestureDetector(
+                  onTap: () {
+                    // Click on pie chart when a section is touched
+                    if (_touchedIndex >= 0 && _touchedIndex < sectionStatuses.length) {
+                      _setStatusFilter(sectionStatuses[_touchedIndex]);
+                    }
+                  },
+                  child: Container(
+                    width: 140,
+                    height: 140,
+                    margin: const EdgeInsets.only(right: 32),
+                    child: Stack(
+                      children: [
+                        PieChart(
+                          PieChartData(
+                            pieTouchData: PieTouchData(
+                              touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                                setState(() {
+                                  if (!event.isInterestedForInteractions ||
+                                      pieTouchResponse == null ||
+                                      pieTouchResponse.touchedSection == null) {
+                                    _touchedIndex = -1;
+                                    return;
+                                  }
+                                  _touchedIndex =
+                                      pieTouchResponse.touchedSection!.touchedSectionIndex;
+                                });
+                                // Tap on pie section filters
+                                if (event is FlTapUpEvent &&
+                                    pieTouchResponse?.touchedSection != null) {
+                                  final idx = pieTouchResponse!.touchedSection!.touchedSectionIndex;
+                                  if (idx >= 0 && idx < sectionStatuses.length) {
+                                    _setStatusFilter(sectionStatuses[idx]);
+                                  }
                                 }
-                                _touchedIndex =
-                                    pieTouchResponse.touchedSection!.touchedSectionIndex;
-                              });
-                            },
+                              },
+                            ),
+                            sectionsSpace: 4,
+                            centerSpaceRadius: 40,
+                            sections: [
+                              _buildPieSection(0, online.toDouble(), const Color(0xFF10B981), 'Online', total),
+                              _buildPieSection(1, offline.toDouble(), const Color(0xFFEF4444), 'Offline', total),
+                              _buildPieSection(2, degraded.toDouble(), const Color(0xFFF59E0B), 'Degraded', total),
+                              _buildPieSection(3, paused.toDouble(), const Color(0xFF94A3B8), 'Paused', total),
+                            ],
                           ),
-                          sectionsSpace: 4,
-                          centerSpaceRadius: 40,
-                          sections: [
-                            _buildPieSection(0, online.toDouble(), const Color(0xFF10B981), 'Online', total),
-                            _buildPieSection(1, offline.toDouble(), const Color(0xFFEF4444), 'Offline', total),
-                            _buildPieSection(2, degraded.toDouble(), const Color(0xFFF59E0B), 'Degraded', total),
-                            _buildPieSection(3, paused.toDouble(), const Color(0xFF94A3B8), 'Paused', total),
-                          ],
                         ),
-                      ),
-                      Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('$total', style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface)),
-                            Text('NODES', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                          ],
+                        Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text('$total', style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface)),
+                              Text('NODES', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               Expanded(
@@ -658,11 +573,21 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   children: [
                     Row(
                       children: [
-                        _buildHUDItem('ACTIVE', '$online', const Color(0xFF10B981), Icons.check_circle_outline),
+                        _buildHUDItem('ACTIVE', '$online', const Color(0xFF10B981), Icons.check_circle_outline,
+                            onTap: () => _setStatusFilter(DeviceStatus.online)),
                         const SizedBox(width: 16),
-                        _buildHUDItem('DEGRADED', '$degraded', const Color(0xFFF59E0B), Icons.warning_amber_rounded),
+                        _buildHUDItem('DEGRADED', '$degraded', const Color(0xFFF59E0B), Icons.warning_amber_rounded,
+                            onTap: () => _setStatusFilter(DeviceStatus.degraded)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        _buildHUDItem('CRITICAL', '$offline', const Color(0xFFEF4444), Icons.error_outline,
+                            onTap: () => _setStatusFilter(DeviceStatus.offline)),
                         const SizedBox(width: 16),
-                        _buildHUDItem('CRITICAL', '$offline', const Color(0xFFEF4444), Icons.error_outline),
+                        _buildHUDItem('PAUSED', '$paused', const Color(0xFF94A3B8), Icons.pause_circle_outline,
+                            onTap: () => _setStatusFilter(DeviceStatus.unknown)),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -690,12 +615,13 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
 
   PieChartSectionData _buildPieSection(int index, double value, Color color, String label, int total) {
     final isTouched = index == _touchedIndex;
+    final isFiltered = widget.statusFilter != null;
     final fontSize = isTouched ? 14.0 : 0.0;
     final radius = isTouched ? 45.0 : 35.0;
     final percentage = total > 0 ? (value / total * 100).toStringAsFixed(0) : '0';
 
     return PieChartSectionData(
-      color: color,
+      color: isFiltered && !isTouched ? color.withValues(alpha: 0.3) : color,
       value: value,
       title: '$percentage%',
       radius: radius,
@@ -727,30 +653,37 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
   }
 
-  Widget _buildHUDItem(String label, String value, Color color, IconData icon) {
+  Widget _buildHUDItem(String label, String value, Color color, IconData icon, {VoidCallback? onTap}) {
+    final isActive = widget.statusFilter != null;
     return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withValues(alpha: 0.15)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+      child: GestureDetector(
+        onTap: onTap,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: isActive ? 0.04 : 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: color.withValues(alpha: 0.15)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(icon, size: 16, color: color),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: color, letterSpacing: 0.5), overflow: TextOverflow.ellipsis),
+                Row(
+                  children: [
+                    Icon(icon, size: 16, color: color),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: color, letterSpacing: 0.5), overflow: TextOverflow.ellipsis),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 8),
+                Text(value, style: GoogleFonts.jetBrainsMono(fontSize: 26, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
               ],
             ),
-            const SizedBox(height: 8),
-            Text(value, style: GoogleFonts.jetBrainsMono(fontSize: 26, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
-          ],
+          ),
         ),
       ),
     );
@@ -759,6 +692,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   Widget _buildGroup(BuildContext context, DeviceGroup? group) {
     final groupDevices = _getFilteredDevices(group?.id);
     if (groupDevices.isEmpty && _searchQuery.isNotEmpty) return const SizedBox.shrink();
+    if (groupDevices.isEmpty && widget.statusFilter != null) return const SizedBox.shrink();
     if (group == null && groupDevices.isEmpty) return const SizedBox.shrink();
 
     return Theme(

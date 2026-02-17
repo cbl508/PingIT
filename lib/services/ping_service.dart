@@ -42,6 +42,19 @@ class PingService {
       effectiveStatus = oldStatus;
     }
 
+    // Check user-defined thresholds for degraded detection
+    if (effectiveStatus == DeviceStatus.online) {
+      if (device.latencyThreshold != null &&
+          result.latency != null &&
+          result.latency! > device.latencyThreshold!) {
+        effectiveStatus = DeviceStatus.degraded;
+      }
+      if (device.packetLossThreshold != null &&
+          result.packetLoss > device.packetLossThreshold!) {
+        effectiveStatus = DeviceStatus.degraded;
+      }
+    }
+
     device.status = effectiveStatus;
     device.lastLatency = result.latency;
     device.packetLoss = result.packetLoss;
