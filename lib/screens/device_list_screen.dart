@@ -25,6 +25,8 @@ class DeviceListScreen extends StatefulWidget {
     required this.onDeleteGroup,
     required this.onEditDevice,
     required this.onTapDevice,
+    required this.onBulkDelete,
+    required this.onBulkMoveToGroup,
   });
 
   final List<Device> devices;
@@ -39,6 +41,8 @@ class DeviceListScreen extends StatefulWidget {
   final Function(DeviceGroup) onDeleteGroup;
   final Function(Device) onEditDevice;
   final Function(Device) onTapDevice;
+  final Function(Set<String>) onBulkDelete;
+  final Function(Set<String>) onBulkMoveToGroup;
 
   @override
   State<DeviceListScreen> createState() => _DeviceListScreenState();
@@ -48,6 +52,32 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   String _searchQuery = '';
   SortOption _sortOption = SortOption.status;
   int _touchedIndex = -1;
+  bool _isMultiSelect = false;
+  final Set<String> _selectedIds = {};
+
+  void _toggleMultiSelect() {
+    setState(() {
+      _isMultiSelect = !_isMultiSelect;
+      if (!_isMultiSelect) _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelection(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+      if (_selectedIds.isEmpty) _isMultiSelect = false;
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selectedIds.addAll(widget.devices.map((d) => d.id));
+    });
+  }
 
   List<Device> _getFilteredDevices(String? groupId) {
     return widget.devices.where((d) {
@@ -88,32 +118,74 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           ),
         ),
         actions: [
-          _buildActionItem(
-            context: context,
-            icon: Icons.radar_outlined,
-            label: 'Quick Scan',
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            textColor: Theme.of(context).colorScheme.primary,
-            onPressed: _showQuickScanDialog,
-          ),
-          const SizedBox(width: 8),
-          _buildActionItem(
-            context: context,
-            icon: Icons.create_new_folder_outlined,
-            label: 'Group',
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            textColor: Theme.of(context).colorScheme.primary,
-            onPressed: widget.onAddGroup,
-          ),
-          const SizedBox(width: 8),
-          _buildActionItem(
-            context: context,
-            icon: Icons.add,
-            label: 'New Node',
-            color: isDark ? const Color(0xFF1E293B) : Colors.white,
-            textColor: Theme.of(context).colorScheme.primary,
-            onPressed: widget.onAddDevice,
-          ),
+          if (_isMultiSelect) ...[
+            TextButton.icon(
+              onPressed: _selectAll,
+              icon: const Icon(Icons.select_all, size: 18),
+              label: Text('All', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            ),
+            TextButton.icon(
+              onPressed: _selectedIds.isNotEmpty
+                  ? () => widget.onBulkMoveToGroup(_selectedIds)
+                  : null,
+              icon: const Icon(Icons.drive_file_move_outline, size: 18),
+              label: Text('Move', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            ),
+            TextButton.icon(
+              onPressed: _selectedIds.isNotEmpty
+                  ? () {
+                      widget.onBulkDelete(_selectedIds);
+                      setState(() {
+                        _isMultiSelect = false;
+                        _selectedIds.clear();
+                      });
+                    }
+                  : null,
+              icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+              label: Text('Delete', style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.red)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: _toggleMultiSelect,
+              tooltip: 'Cancel',
+            ),
+          ] else ...[
+            _buildActionItem(
+              context: context,
+              icon: Icons.checklist_outlined,
+              label: 'Select',
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              textColor: Theme.of(context).colorScheme.primary,
+              onPressed: _toggleMultiSelect,
+            ),
+            const SizedBox(width: 8),
+            _buildActionItem(
+              context: context,
+              icon: Icons.radar_outlined,
+              label: 'Quick Scan',
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              textColor: Theme.of(context).colorScheme.primary,
+              onPressed: _showQuickScanDialog,
+            ),
+            const SizedBox(width: 8),
+            _buildActionItem(
+              context: context,
+              icon: Icons.create_new_folder_outlined,
+              label: 'Group',
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              textColor: Theme.of(context).colorScheme.primary,
+              onPressed: widget.onAddGroup,
+            ),
+            const SizedBox(width: 8),
+            _buildActionItem(
+              context: context,
+              icon: Icons.add,
+              label: 'New Node',
+              color: isDark ? const Color(0xFF1E293B) : Colors.white,
+              textColor: Theme.of(context).colorScheme.primary,
+              onPressed: widget.onAddDevice,
+            ),
+          ],
           const SizedBox(width: 16),
         ],
       ),
@@ -232,10 +304,15 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       }
     }
 
+    void killProcess() {
+      process?.kill();
+      process = null;
+    }
+
     try {
       process = await Process.start('nmap', ['-sV', '-O', '-T4', address],
           runInShell: Platform.isWindows);
-      stdoutSub = process.stdout
+      stdoutSub = process!.stdout
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
@@ -247,7 +324,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         lines.add('[SYSTEM ERR] Decoding error: $e');
         emit('ERROR');
       });
-      stderrSub = process.stderr
+      stderrSub = process!.stderr
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
@@ -259,7 +336,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         lines.add('[SYSTEM ERR] Decoding error: $e');
         emit('ERROR');
       });
-      process.exitCode.then((code) async {
+      process!.exitCode.then((code) async {
         lines.add('');
         lines.add(
           code == 0
@@ -323,7 +400,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             actions: [
               TextButton(
                 onPressed: () async {
-                  process?.kill();
+                  killProcess();
                   Navigator.pop(context);
                 },
                 child: const Text('DISMISS'),
@@ -343,6 +420,8 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       ),
     );
 
+    // Ensure process is killed when dialog closes for any reason
+    killProcess();
     await stdoutSub?.cancel();
     await stderrSub?.cancel();
     await closeStream();
@@ -555,34 +634,10 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                           sectionsSpace: 4,
                           centerSpaceRadius: 40,
                           sections: [
-                            _buildPieSection(
-                              0,
-                              online.toDouble(),
-                              const Color(0xFF10B981),
-                              'Online',
-                              total,
-                            ),
-                            _buildPieSection(
-                              1,
-                              offline.toDouble(),
-                              const Color(0xFFEF4444),
-                              'Offline',
-                              total,
-                            ),
-                            _buildPieSection(
-                              2,
-                              degraded.toDouble(),
-                              const Color(0xFFF59E0B),
-                              'Degraded',
-                              total,
-                            ),
-                            _buildPieSection(
-                              3,
-                              paused.toDouble(),
-                              const Color(0xFF94A3B8),
-                              'Paused',
-                              total,
-                            ),
+                            _buildPieSection(0, online.toDouble(), const Color(0xFF10B981), 'Online', total),
+                            _buildPieSection(1, offline.toDouble(), const Color(0xFFEF4444), 'Offline', total),
+                            _buildPieSection(2, degraded.toDouble(), const Color(0xFFF59E0B), 'Degraded', total),
+                            _buildPieSection(3, paused.toDouble(), const Color(0xFF94A3B8), 'Paused', total),
                           ],
                         ),
                       ),
@@ -590,22 +645,8 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              '$total',
-                              style: GoogleFonts.inter(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: Theme.of(context).colorScheme.onSurface,
-                              ),
-                            ),
-                            Text(
-                              'NODES',
-                              style: GoogleFonts.inter(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                              ),
-                            ),
+                            Text('$total', style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface)),
+                            Text('NODES', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                           ],
                         ),
                       ),
@@ -617,26 +658,11 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   children: [
                     Row(
                       children: [
-                        _buildHUDItem(
-                          'ACTIVE',
-                          '$online',
-                          const Color(0xFF10B981),
-                          Icons.check_circle_outline,
-                        ),
+                        _buildHUDItem('ACTIVE', '$online', const Color(0xFF10B981), Icons.check_circle_outline),
                         const SizedBox(width: 16),
-                        _buildHUDItem(
-                          'DEGRADED',
-                          '$degraded',
-                          const Color(0xFFF59E0B),
-                          Icons.warning_amber_rounded,
-                        ),
+                        _buildHUDItem('DEGRADED', '$degraded', const Color(0xFFF59E0B), Icons.warning_amber_rounded),
                         const SizedBox(width: 16),
-                        _buildHUDItem(
-                          'CRITICAL',
-                          '$offline',
-                          const Color(0xFFEF4444),
-                          Icons.error_outline,
-                        ),
+                        _buildHUDItem('CRITICAL', '$offline', const Color(0xFFEF4444), Icons.error_outline),
                       ],
                     ),
                     const SizedBox(height: 16),
@@ -662,30 +688,18 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
   }
 
-  PieChartSectionData _buildPieSection(
-    int index,
-    double value,
-    Color color,
-    String label,
-    int total,
-  ) {
+  PieChartSectionData _buildPieSection(int index, double value, Color color, String label, int total) {
     final isTouched = index == _touchedIndex;
     final fontSize = isTouched ? 14.0 : 0.0;
     final radius = isTouched ? 45.0 : 35.0;
-    final percentage = total > 0
-        ? (value / total * 100).toStringAsFixed(0)
-        : '0';
+    final percentage = total > 0 ? (value / total * 100).toStringAsFixed(0) : '0';
 
     return PieChartSectionData(
       color: color,
       value: value,
       title: '$percentage%',
       radius: radius,
-      titleStyle: GoogleFonts.inter(
-        fontSize: fontSize,
-        fontWeight: FontWeight.bold,
-        color: Colors.white,
-      ),
+      titleStyle: GoogleFonts.inter(fontSize: fontSize, fontWeight: FontWeight.bold, color: Colors.white),
       badgeWidget: isTouched ? _buildHoverTooltip(label, value.toInt()) : null,
       badgePositionPercentageOffset: .98,
     );
@@ -697,34 +711,18 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       decoration: BoxDecoration(
         color: const Color(0xFF1E293B),
         borderRadius: BorderRadius.circular(4),
-        boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 4),
-        ],
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 4)],
       ),
-      child: Text(
-        '$label: $count',
-        style: GoogleFonts.inter(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
+      child: Text('$label: $count', style: GoogleFonts.inter(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
     );
   }
 
   Widget _buildLegendItem(Color color, String label) {
     return Row(
       children: [
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
+        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 8),
-        Text(
-          label,
-          style: GoogleFonts.inter(fontWeight: FontWeight.w500, fontSize: 12),
-        ),
+        Text(label, style: GoogleFonts.inter(fontWeight: FontWeight.w500, fontSize: 12)),
       ],
     );
   }
@@ -746,28 +744,12 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 Icon(icon, size: 16, color: color),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(
-                    label,
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      color: color,
-                      letterSpacing: 0.5,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  child: Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: color, letterSpacing: 0.5), overflow: TextOverflow.ellipsis),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Text(
-              value,
-              style: GoogleFonts.jetBrainsMono(
-                fontSize: 26,
-                fontWeight: FontWeight.w700,
-                color: Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
+            Text(value, style: GoogleFonts.jetBrainsMono(fontSize: 26, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
           ],
         ),
       ),
@@ -776,8 +758,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
 
   Widget _buildGroup(BuildContext context, DeviceGroup? group) {
     final groupDevices = _getFilteredDevices(group?.id);
-    if (groupDevices.isEmpty && _searchQuery.isNotEmpty)
-      return const SizedBox.shrink();
+    if (groupDevices.isEmpty && _searchQuery.isNotEmpty) return const SizedBox.shrink();
     if (group == null && groupDevices.isEmpty) return const SizedBox.shrink();
 
     return Theme(
@@ -787,11 +768,11 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (group != null || groupDevices.isNotEmpty)
-             Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Theme(
-                  data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                  child: ExpansionTile(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Theme(
+                data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
                   initiallyExpanded: group?.isExpanded ?? true,
                   onExpansionChanged: (val) {
                     if (group != null) {
@@ -804,57 +785,23 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   collapsedShape: const Border(),
                   title: Row(
                     children: [
-                      Icon(
-                        group == null ? Icons.grid_view : Icons.folder_open,
-                        size: 18,
-                        color: Theme.of(context).colorScheme.primary,
-                      ),
+                      Icon(group == null ? Icons.grid_view : Icons.folder_open, size: 18, color: Theme.of(context).colorScheme.primary),
                       const SizedBox(width: 12),
-                      Text(
-                        group?.name ?? 'Unassigned Nodes',
-                        style: GoogleFonts.inter(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 14,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
-                      ),
+                      Text(group?.name ?? 'Unassigned Nodes', style: GoogleFonts.inter(fontWeight: FontWeight.w700, fontSize: 14, color: Theme.of(context).colorScheme.onSurface)),
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          '${groupDevices.length}',
-                          style: GoogleFonts.inter(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
+                        decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+                        child: Text('${groupDevices.length}', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                       ),
                       if (group != null) ...[
                         const Spacer(),
                         PopupMenuButton(
-                          icon: Icon(
-                            Icons.more_horiz,
-                            size: 20,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant
-                          ),
+                          icon: Icon(Icons.more_horiz, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
                           tooltip: 'Group Settings',
                           itemBuilder: (context) => [
-                            const PopupMenuItem(
-                              value: 'rename',
-                              child: Text('Rename Group'),
-                            ),
-                            const PopupMenuItem(
-                              value: 'delete',
-                              child: Text(
-                                'Delete Group',
-                                style: TextStyle(color: Colors.red),
-                              ),
-                            ),
+                            const PopupMenuItem(value: 'rename', child: Text('Rename Group')),
+                            const PopupMenuItem(value: 'delete', child: Text('Delete Group', style: TextStyle(color: Colors.red))),
                           ],
                           onSelected: (val) {
                             if (val == 'rename') widget.onRenameGroup(group);
@@ -867,7 +814,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   children: groupDevices.map((d) => _buildNodeTile(d)).toList(),
                 ),
               ),
-             ),
+            ),
         ],
       ),
     );
@@ -880,43 +827,60 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             ? const Color(0xFF10B981)
             : (d.status == DeviceStatus.degraded ? const Color(0xFFF59E0B) : const Color(0xFFEF4444)));
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isSelected = _selectedIds.contains(d.id);
 
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardTheme.color,
+        color: isSelected
+            ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3)
+            : Theme.of(context).cardTheme.color,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.15),
+          color: isSelected
+              ? Theme.of(context).colorScheme.primary
+              : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.15)),
+          width: isSelected ? 2 : 1,
         ),
       ),
       child: InkWell(
         key: ValueKey(d.id),
-        onTap: () => widget.onTapDevice(d),
-        onLongPress: () => widget.onEditDevice(d),
+        onTap: _isMultiSelect ? () => _toggleSelection(d.id) : () => widget.onTapDevice(d),
+        onLongPress: _isMultiSelect
+            ? null
+            : () {
+                setState(() {
+                  _isMultiSelect = true;
+                  _selectedIds.add(d.id);
+                });
+              },
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: statusColor,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: statusColor.withValues(alpha: 0.4),
-                      blurRadius: 6,
-                      spreadRadius: 1,
-                    ),
-                  ],
+              if (_isMultiSelect)
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Icon(
+                    isSelected ? Icons.check_circle : Icons.circle_outlined,
+                    color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey,
+                    size: 24,
+                  ),
+                )
+              else
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: statusColor,
+                    shape: BoxShape.circle,
+                    boxShadow: [BoxShadow(color: statusColor.withValues(alpha: 0.4), blurRadius: 6, spreadRadius: 1)],
+                  ),
+                ).animate(target: d.status == DeviceStatus.online ? 1 : 0).shimmer(
+                  delay: Duration(milliseconds: 1000 + (d.hashCode % 1000)),
+                  duration: 2.seconds,
                 ),
-              ).animate(target: d.status == DeviceStatus.online ? 1 : 0).shimmer(
-                delay: Duration(milliseconds: 1000 + (d.hashCode % 1000)),
-                duration: 2.seconds,
-              ),
               const SizedBox(width: 16),
               Container(
                 padding: const EdgeInsets.all(10),
@@ -924,35 +888,16 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Icon(
-                  d.typeIcon,
-                  size: 20,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+                child: Icon(d.typeIcon, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      d.name,
-                      style: GoogleFonts.inter(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                        color: d.isPaused
-                            ? Theme.of(context).disabledColor
-                            : Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
+                    Text(d.name, style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15, color: d.isPaused ? Theme.of(context).disabledColor : Theme.of(context).colorScheme.onSurface)),
                     const SizedBox(height: 4),
-                    Text(
-                      d.address,
-                      style: GoogleFonts.jetBrainsMono(
-                        fontSize: 12,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
+                    Text(d.address, style: GoogleFonts.jetBrainsMono(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   ],
                 ),
               ),
@@ -962,44 +907,24 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    d.isPaused
-                        ? 'PAUSED'
-                        : (d.lastLatency != null
-                            ? '${d.lastLatency!.toStringAsFixed(1)}ms'
-                            : '--'),
-                    style: GoogleFonts.jetBrainsMono(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
-                      color: d.isPaused
-                          ? Theme.of(context).disabledColor
-                          : Theme.of(context).colorScheme.onSurface,
-                    ),
+                    d.isPaused ? 'PAUSED' : (d.lastLatency != null ? '${d.lastLatency!.toStringAsFixed(1)}ms' : '--'),
+                    style: GoogleFonts.jetBrainsMono(fontWeight: FontWeight.w700, fontSize: 14, color: d.isPaused ? Theme.of(context).disabledColor : Theme.of(context).colorScheme.onSurface),
                   ),
                   const SizedBox(height: 4),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
+                    decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
                     child: Text(
                       d.isPaused ? 'MAINTENANCE' : d.status.name.toUpperCase(),
-                      style: GoogleFonts.inter(
-                        fontSize: 9,
-                        color: statusColor,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                      ),
+                      style: GoogleFonts.inter(fontSize: 9, color: statusColor, fontWeight: FontWeight.w700, letterSpacing: 0.5),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(width: 16),
-              Icon(
-                Icons.chevron_right,
-                size: 20,
-                color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-              ),
+              if (!_isMultiSelect) ...[
+                const SizedBox(width: 16),
+                Icon(Icons.chevron_right, size: 20, color: Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
+              ],
             ],
           ),
         ),
@@ -1013,22 +938,24 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       return FlSpot(e.key.toDouble(), e.value.latencyMs ?? 0);
     }).toList();
 
-    return LineChart(
-      LineChartData(
-        gridData: const FlGridData(show: false),
-        titlesData: const FlTitlesData(show: false),
-        borderData: FlBorderData(show: false),
-        lineBarsData: [
-          LineChartBarData(
-            spots: spots,
-            isCurved: true,
-            color: d.status == DeviceStatus.online
-                ? Colors.blue.withValues(alpha: 0.5)
-                : Colors.red.withValues(alpha: 0.5),
-            barWidth: 1.5,
-            dotData: const FlDotData(show: false),
-          ),
-        ],
+    return RepaintBoundary(
+      child: LineChart(
+        LineChartData(
+          gridData: const FlGridData(show: false),
+          titlesData: const FlTitlesData(show: false),
+          borderData: FlBorderData(show: false),
+          lineBarsData: [
+            LineChartBarData(
+              spots: spots,
+              isCurved: true,
+              color: d.status == DeviceStatus.online
+                  ? Colors.blue.withValues(alpha: 0.5)
+                  : Colors.red.withValues(alpha: 0.5),
+              barWidth: 1.5,
+              dotData: const FlDotData(show: false),
+            ),
+          ],
+        ),
       ),
     );
   }
