@@ -24,7 +24,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Package Windows zip
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath pingit-windows.zip
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath pingit-windows-portable.zip
         shell: pwsh
 
       - name: Build Windows installer
@@ -38,14 +38,14 @@ jobs:
         with:
           name: pingit-windows
           path: |
-            pingit-windows.zip
+            pingit-windows-portable.zip
             build/installer/*.exe
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            pingit-windows.zip
+            pingit-windows-portable.zip
             build/installer/*.exe
 
   build-linux:
