@@ -31,10 +31,12 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "installnmap"; Description: "Open Nmap download page (required for Deep Scan)"; GroupDescription: "Optional Dependencies:"; Flags: unchecked
+Name: "installnmap"; Description: "Install Nmap 7.95 (required for Deep Scan — ports, OS detection, services)"; GroupDescription: "Optional Dependencies:"; Flags: unchecked
 
 [Files]
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Nmap installer bundled during CI build
+Source: "..\build\deps\nmap-setup.exe"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall; Tasks: installnmap
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -42,5 +44,7 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Run bundled nmap installer if the user selected it — runs with its own GUI
+Filename: "{tmp}\nmap-setup.exe"; Parameters: ""; Description: "Installing Nmap..."; StatusMsg: "Installing Nmap 7.95..."; Tasks: installnmap; Flags: waituntilterminated
+; Launch PingIT after install
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
-Filename: "https://nmap.org/download.html"; Description: "Download Nmap (for Deep Scan)"; Flags: nowait postinstall shellexec skipifsilent; Tasks: installnmap
