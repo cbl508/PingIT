@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
 
 class AddDeviceScreen extends StatefulWidget {
@@ -32,6 +33,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   String? _selectedGroupId;
   late DeviceType _selectedType;
   late CheckType _selectedCheckType;
+  DateTime? _maintenanceUntil;
 
   final List<int> _intervalOptions = [5, 10, 30, 60, 300, 600];
   final List<int> _thresholdOptions = [1, 2, 3, 5, 10];
@@ -61,6 +63,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _selectedGroupId = widget.device?.groupId;
     _selectedType = widget.device?.type ?? DeviceType.server;
     _selectedCheckType = widget.device?.checkType ?? CheckType.icmp;
+    _maintenanceUntil = widget.device?.maintenanceUntil;
   }
 
   @override
@@ -103,6 +106,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         widget.device!.port = port;
         widget.device!.latencyThreshold = latencyThreshold;
         widget.device!.packetLossThreshold = packetLossThreshold;
+        widget.device!.maintenanceUntil = _maintenanceUntil;
         Navigator.of(context).pop(widget.device);
       } else {
         final newDevice = Device(
@@ -117,6 +121,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           port: port,
           latencyThreshold: latencyThreshold,
           packetLossThreshold: packetLossThreshold,
+          maintenanceUntil: _maintenanceUntil,
         );
         Navigator.of(context).pop(newDevice);
       }
@@ -402,6 +407,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                                 if (val == null || val.trim().isEmpty) return null;
                                 final v = double.tryParse(val.trim());
                                 if (v == null || v <= 0) return 'Must be a positive number';
+                                if (v > 10000) return 'Maximum is 10,000ms';
                                 return null;
                               },
                             ),
@@ -429,6 +435,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 16),
+                      _buildMaintenanceWindowPicker(),
                       const SizedBox(height: 16),
                       _buildField(
                         _tagsController,
@@ -602,6 +610,61 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     final uriHost = Uri.tryParse('scheme://$value')?.host ?? '';
     final host = uriHost.isNotEmpty ? uriHost : value;
     return _hostLikePattern.hasMatch(host);
+  }
+
+  Widget _buildMaintenanceWindowPicker() {
+    final hasWindow = _maintenanceUntil != null && _maintenanceUntil!.isAfter(DateTime.now());
+    return InputDecorator(
+      decoration: InputDecoration(
+        labelText: 'Maintenance Window',
+        labelStyle: GoogleFonts.inter(),
+        prefixIcon: const Icon(Icons.construction_outlined),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        helperText: 'Suppress alerts during scheduled maintenance',
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              hasWindow
+                  ? 'Until ${DateFormat('MMM dd, yyyy HH:mm').format(_maintenanceUntil!)}'
+                  : 'No maintenance scheduled',
+              style: GoogleFonts.inter(
+                color: hasWindow ? Theme.of(context).colorScheme.primary : Colors.grey,
+              ),
+            ),
+          ),
+          if (hasWindow)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () => setState(() => _maintenanceUntil = null),
+              tooltip: 'Clear',
+            ),
+          TextButton(
+            onPressed: () async {
+              final date = await showDatePicker(
+                context: context,
+                initialDate: _maintenanceUntil ?? DateTime.now().add(const Duration(hours: 1)),
+                firstDate: DateTime.now(),
+                lastDate: DateTime.now().add(const Duration(days: 365)),
+              );
+              if (date == null || !mounted) return;
+              final time = await showTimePicker(
+                context: context,
+                initialTime: _maintenanceUntil != null
+                    ? TimeOfDay.fromDateTime(_maintenanceUntil!)
+                    : TimeOfDay.now(),
+              );
+              if (time == null || !mounted) return;
+              setState(() {
+                _maintenanceUntil = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+              });
+            },
+            child: Text(hasWindow ? 'Change' : 'Schedule'),
+          ),
+        ],
+      ),
+    );
   }
 
   IconData _getIconForType(DeviceType type) {

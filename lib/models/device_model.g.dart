@@ -65,6 +65,10 @@ Device _$DeviceFromJson(Map<String, dynamic> json) => Device(
   latencyThreshold: (json['latencyThreshold'] as num?)?.toDouble(),
   packetLossThreshold: (json['packetLossThreshold'] as num?)?.toDouble(),
   consecutiveFailures: (json['consecutiveFailures'] as num?)?.toInt() ?? 0,
+  maxHistory: (json['maxHistory'] as num?)?.toInt() ?? 2000,
+  maintenanceUntil: json['maintenanceUntil'] == null
+      ? null
+      : DateTime.parse(json['maintenanceUntil'] as String),
   topologyX: (json['topologyX'] as num?)?.toDouble(),
   topologyY: (json['topologyY'] as num?)?.toDouble(),
   parentId: json['parentId'] as String?,
@@ -88,6 +92,8 @@ Map<String, dynamic> _$DeviceToJson(Device instance) => <String, dynamic>{
   'latencyThreshold': instance.latencyThreshold,
   'packetLossThreshold': instance.packetLossThreshold,
   'consecutiveFailures': instance.consecutiveFailures,
+  'maxHistory': instance.maxHistory,
+  'maintenanceUntil': instance.maintenanceUntil?.toIso8601String(),
   'topologyX': instance.topologyX,
   'topologyY': instance.topologyY,
   'parentId': instance.parentId,

@@ -53,6 +53,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // Status filter from HUD click
   DeviceStatus? _hudStatusFilter;
 
+  // Backoff tracking
+  DateTime? _lastPollAttempt;
+
   @override
   void initState() {
     super.initState();
@@ -107,7 +110,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _emailService.updateSettings(emailSettings);
     _webhookService.updateSettings(webhookSettings);
 
-    // Restore runtime state from persisted history
+    // Restore runtime state from persisted history & clear expired maintenance
     for (var device in devices) {
       if (device.history.isNotEmpty) {
         final last = device.history.last;
@@ -115,6 +118,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         device.lastLatency = last.latencyMs;
         device.packetLoss = last.packetLoss;
         device.lastResponseCode = last.responseCode;
+      }
+      // Clear expired maintenance windows
+      if (device.maintenanceUntil != null && DateTime.now().isAfter(device.maintenanceUntil!)) {
+        device.maintenanceUntil = null;
       }
     }
 
@@ -143,7 +150,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _updateDeviceStatuses() async {
     if (_devices.isEmpty || _isPolling) return;
+
+    // Respect exponential backoff on repeated failures
+    final backoff = _pingService.backoffSeconds;
+    if (backoff > 0 && _lastPollAttempt != null) {
+      final elapsed = DateTime.now().difference(_lastPollAttempt!).inSeconds;
+      if (elapsed < backoff) return;
+    }
+
     _isPolling = true;
+    _lastPollAttempt = DateTime.now();
     try {
       bool hadCriticalTransition = false;
       await _pingService.pingAllDevices(
@@ -166,6 +182,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               if (parent != null && parent.status == DeviceStatus.offline) {
                 shouldSuppress = true;
               }
+            }
+
+            // Maintenance window suppression
+            if (d.isInMaintenance) {
+              shouldSuppress = true;
             }
 
             // Quiet hours suppression
@@ -431,6 +452,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (result == 'delete') {
       setState(() => _devices.remove(device));
       unawaited(_saveAll());
+    } else if (result is Device && result.id != device.id) {
+      // Clone result — add as new device
+      setState(() => _devices.add(result));
+      unawaited(_saveAll());
     } else {
       unawaited(_saveAll());
       setState(() {});
@@ -468,6 +493,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
       ),
     );
+  }
+
+  void _handleBulkPause(Set<String> ids) {
+    setState(() {
+      for (var d in _devices) {
+        if (ids.contains(d.id)) d.isPaused = true;
+      }
+    });
+    unawaited(_saveAll());
+  }
+
+  void _handleBulkResume(Set<String> ids) {
+    setState(() {
+      for (var d in _devices) {
+        if (ids.contains(d.id)) d.isPaused = false;
+      }
+    });
+    unawaited(_saveAll());
   }
 
   void _handleBulkMoveToGroup(Set<String> ids) {
@@ -604,6 +647,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 _navigateToAddDeviceScreen(existingDevice: d),
                             onTapDevice: _navigateToDetailsScreen,
                             onBulkDelete: _handleBulkDelete,
+                            onBulkPause: _handleBulkPause,
+                            onBulkResume: _handleBulkResume,
                             onBulkMoveToGroup: _handleBulkMoveToGroup,
                             statusFilter: _hudStatusFilter,
                             onStatusFilterChanged: (filter) {

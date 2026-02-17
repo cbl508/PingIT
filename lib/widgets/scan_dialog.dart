@@ -21,6 +21,84 @@ const Map<int, String> _commonPorts = {
   27017: 'MongoDB',
 };
 
+/// Checks if a command exists on the system PATH.
+Future<bool> _commandExists(String cmd) async {
+  try {
+    final which = Platform.isWindows ? 'where' : 'which';
+    final result = await Process.run(which, [cmd]);
+    return result.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Shows a dialog telling the user that required dependencies are missing.
+Future<void> _showMissingDepsDialog(BuildContext context, List<String> missing) {
+  String instructions;
+  if (Platform.isLinux) {
+    instructions = 'Install with:\n  sudo apt install ${missing.join(' ')}';
+  } else if (Platform.isMacOS) {
+    instructions = 'Install with:\n  brew install ${missing.join(' ')}';
+  } else {
+    final urls = <String>[];
+    if (missing.contains('nmap')) urls.add('nmap: https://nmap.org/download.html');
+    if (missing.contains('traceroute')) urls.add('traceroute: included with nmap installer');
+    instructions = 'Download and install:\n${urls.join('\n')}';
+  }
+
+  return showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+          const SizedBox(width: 12),
+          Text('Missing Dependencies', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        ],
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Deep Scan requires the following tool(s) that are not installed:',
+            style: GoogleFonts.inter(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          ...missing.map((m) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(children: [
+              const Icon(Icons.close, size: 16, color: Colors.red),
+              const SizedBox(width: 8),
+              Text(m, style: GoogleFonts.jetBrainsMono(fontWeight: FontWeight.bold)),
+            ]),
+          )),
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+            ),
+            child: SelectableText(
+              instructions,
+              style: GoogleFonts.jetBrainsMono(fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('OK'),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Shows the scan address input dialog with Quick/Deep options.
 /// Returns the scan output lines or null if cancelled.
 void showScanInputDialog({
@@ -30,9 +108,26 @@ void showScanInputDialog({
 }) {
   final controller = TextEditingController(text: initialAddress ?? '');
 
-  void startScan(ScanType type, BuildContext dialogContext) {
-    if (controller.text.trim().isNotEmpty) {
-      final addr = controller.text.trim();
+  void startScan(ScanType type, BuildContext dialogContext) async {
+    if (controller.text.trim().isEmpty) return;
+    final addr = controller.text.trim();
+
+    // For deep scan, check required tools before proceeding
+    if (type == ScanType.deep) {
+      final missing = <String>[];
+      if (!await _commandExists('nmap')) missing.add('nmap');
+      if (!await _commandExists(Platform.isWindows ? 'tracert' : 'traceroute')) {
+        missing.add(Platform.isWindows ? 'tracert' : 'traceroute');
+      }
+      if (missing.isNotEmpty) {
+        if (dialogContext.mounted) {
+          await _showMissingDepsDialog(dialogContext, missing);
+        }
+        return;
+      }
+    }
+
+    if (dialogContext.mounted) {
       Navigator.pop(dialogContext);
       onStart(addr, type);
     }
@@ -84,12 +179,8 @@ void showScanInputDialog({
               onPressed: () => startScan(ScanType.quick, dialogContext),
               child: const Text('Quick Scan'),
             ),
-            FilledButton(
+            OutlinedButton(
               onPressed: () => startScan(ScanType.deep, dialogContext),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF334155),
-                foregroundColor: const Color(0xFF94A3B8),
-              ),
               child: const Text('Deep Scan'),
             ),
           ],
@@ -177,7 +268,19 @@ Future<List<String>?> _runBuiltInScan({
           child: Focus(
             autofocus: true,
             child: AlertDialog(
-              title: Text('Quick Port Scan', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+              title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Quick Port Scan', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                  if (!isDone) ...[
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: const LinearProgressIndicator(minHeight: 3),
+                    ),
+                  ],
+                ],
+              ),
               backgroundColor: const Color(0xFF0F172A),
               content: Container(
                 width: 700,
@@ -491,9 +594,21 @@ Future<List<String>?> _runNmapScan({
             child: Focus(
               autofocus: true,
               child: AlertDialog(
-                title: Text(
-                  dialogTitle ?? 'Deep Infrastructure Scan',
-                  style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+                title: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      dialogTitle ?? 'Deep Infrastructure Scan',
+                      style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+                    ),
+                    if (!isDone) ...[
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: const LinearProgressIndicator(minHeight: 3),
+                      ),
+                    ],
+                  ],
                 ),
                 backgroundColor: const Color(0xFF0F172A),
                 content: Container(

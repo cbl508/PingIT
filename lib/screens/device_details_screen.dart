@@ -31,13 +31,18 @@ class DeviceDetailsScreen extends StatefulWidget {
 class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
   Timer? _refreshTimer;
   final ScrollController _chartScrollController = ScrollController();
+  int _lastHistoryLength = 0;
 
   @override
   void initState() {
     super.initState();
-    // Refresh every 5 seconds instead of every 1 second — reduces GPU pressure.
+    _lastHistoryLength = widget.device.history.length;
+    // Refresh every 5 seconds — only rebuild if history actually changed.
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (mounted) setState(() {});
+      if (mounted && widget.device.history.length != _lastHistoryLength) {
+        _lastHistoryLength = widget.device.history.length;
+        setState(() {});
+      }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -74,6 +79,26 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     } else if (result is Device) {
       if (mounted) setState(() {});
     }
+  }
+
+  void _cloneDevice() {
+    final d = widget.device;
+    final clone = Device(
+      name: '${d.name} (Copy)',
+      address: d.address,
+      groupId: d.groupId,
+      interval: d.interval,
+      tags: List.from(d.tags),
+      type: d.type,
+      checkType: d.checkType,
+      port: d.port,
+      failureThreshold: d.failureThreshold,
+      latencyThreshold: d.latencyThreshold,
+      packetLossThreshold: d.packetLossThreshold,
+      maxHistory: d.maxHistory,
+      parentId: d.parentId,
+    );
+    Navigator.of(context).pop(clone);
   }
 
   void _showScanMenu() {
@@ -235,6 +260,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
         actions: [
           _buildHeaderAction('Scan Host', Icons.radar_outlined, _showScanMenu),
           _buildHeaderAction('Trace', Icons.analytics_outlined, _runTraceroute),
+          _buildHeaderAction('Clone', Icons.copy_outlined, _cloneDevice),
           _buildHeaderAction('Configure', Icons.edit_outlined, _editDevice),
           const SizedBox(width: 12),
         ],
@@ -288,16 +314,24 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
 
   _SLAData _calculateSLA() {
     final history = widget.device.history;
-    if (history.isEmpty) return _SLAData(100, 100, 100, Duration.zero);
+    if (history.isEmpty) return _SLAData(100, 100, 100, 100, 100, 100, Duration.zero);
 
     final now = DateTime.now();
     final last24h = history.where((h) => now.difference(h.timestamp).inHours < 24).toList();
     final last7d = history.where((h) => now.difference(h.timestamp).inDays < 7).toList();
     final last30d = history.where((h) => now.difference(h.timestamp).inDays < 30).toList();
 
-    double uptime(List<StatusHistory> h) {
+    // Available = not offline (includes online + degraded)
+    double available(List<StatusHistory> h) {
       if (h.isEmpty) return 100.0;
-      final online = h.where((e) => e.status != DeviceStatus.offline).length;
+      final up = h.where((e) => e.status != DeviceStatus.offline).length;
+      return (up / h.length) * 100;
+    }
+
+    // Perfect = strictly online only
+    double perfect(List<StatusHistory> h) {
+      if (h.isEmpty) return 100.0;
+      final online = h.where((e) => e.status == DeviceStatus.online).length;
       return (online / h.length) * 100;
     }
 
@@ -316,7 +350,11 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
       totalDowntime += now.difference(downStart);
     }
 
-    return _SLAData(uptime(last24h), uptime(last7d), uptime(last30d), totalDowntime);
+    return _SLAData(
+      available(last24h), available(last7d), available(last30d),
+      perfect(last24h), perfect(last7d), perfect(last30d),
+      totalDowntime,
+    );
   }
 
   Widget _buildSLACard(BuildContext context, _SLAData sla) {
@@ -338,13 +376,17 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
               style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w800,
                   color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 1)),
           const SizedBox(height: 16),
+          Text('AVAILABLE (non-offline)',
+              style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
+          const SizedBox(height: 8),
           Row(
             children: [
-              _buildSLAMetric(context, '24h', sla.uptime24h),
+              _buildSLAMetric(context, '24h', sla.avail24h),
               const SizedBox(width: 16),
-              _buildSLAMetric(context, '7 days', sla.uptime7d),
+              _buildSLAMetric(context, '7 days', sla.avail7d),
               const SizedBox(width: 16),
-              _buildSLAMetric(context, '30 days', sla.uptime30d),
+              _buildSLAMetric(context, '30 days', sla.avail30d),
               const SizedBox(width: 24),
               Expanded(
                 child: Column(
@@ -360,6 +402,20 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                   ],
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Text('PERFECT UPTIME (online only)',
+              style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _buildSLAMetric(context, '24h', sla.perfect24h),
+              const SizedBox(width: 16),
+              _buildSLAMetric(context, '7 days', sla.perfect7d),
+              const SizedBox(width: 16),
+              _buildSLAMetric(context, '30 days', sla.perfect30d),
             ],
           ),
         ],
@@ -790,7 +846,8 @@ class _DeviceStats {
 }
 
 class _SLAData {
-  final double uptime24h, uptime7d, uptime30d;
+  final double avail24h, avail7d, avail30d;
+  final double perfect24h, perfect7d, perfect30d;
   final Duration totalDowntime;
-  _SLAData(this.uptime24h, this.uptime7d, this.uptime30d, this.totalDowntime);
+  _SLAData(this.avail24h, this.avail7d, this.avail30d, this.perfect24h, this.perfect7d, this.perfect30d, this.totalDowntime);
 }

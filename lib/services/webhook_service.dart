@@ -116,11 +116,17 @@ class WebhookService {
     final timestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now());
     final isOffline = newStatus == DeviceStatus.offline;
     final isDegraded = newStatus == DeviceStatus.degraded;
+    final isRecovery = oldStatus == DeviceStatus.offline && newStatus == DeviceStatus.online;
 
     switch (_settings!.type) {
       case WebhookType.slack:
         final color = isOffline ? '#EF4444' : (isDegraded ? '#F59E0B' : '#10B981');
-        final emoji = isOffline ? ':red_circle:' : (isDegraded ? ':large_yellow_circle:' : ':large_green_circle:');
+        final emoji = isRecovery
+            ? ':white_check_mark:'
+            : isOffline
+                ? ':red_circle:'
+                : (isDegraded ? ':large_yellow_circle:' : ':large_green_circle:');
+        final label = isRecovery ? 'RECOVERED' : newStatus.name.toUpperCase();
         return {
           'attachments': [
             {
@@ -130,7 +136,7 @@ class WebhookService {
                   'type': 'section',
                   'text': {
                     'type': 'mrkdwn',
-                    'text': '$emoji *${device.name}* is now *${newStatus.name.toUpperCase()}*\n'
+                    'text': '$emoji *${device.name}* is now *$label*\n'
                         '`${device.address}` | ${device.checkType.name.toUpperCase()} | $timestamp',
                   },
                 },
@@ -141,10 +147,13 @@ class WebhookService {
 
       case WebhookType.discord:
         final color = isOffline ? 0xEF4444 : (isDegraded ? 0xF59E0B : 0x10B981);
+        final title = isRecovery
+            ? 'RECOVERED: ${device.name} is back online'
+            : '${device.name} is ${newStatus.name.toUpperCase()}';
         return {
           'embeds': [
             {
-              'title': '${device.name} is ${newStatus.name.toUpperCase()}',
+              'title': title,
               'color': color,
               'fields': [
                 {'name': 'Address', 'value': device.address, 'inline': true},
@@ -158,8 +167,9 @@ class WebhookService {
         };
 
       case WebhookType.generic:
+        final eventType = isRecovery ? 'service_recovered' : 'status_change';
         return {
-          'event': 'status_change',
+          'event': eventType,
           'device': {
             'name': device.name,
             'address': device.address,
