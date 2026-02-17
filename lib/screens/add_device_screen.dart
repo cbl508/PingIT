@@ -20,11 +20,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   late TextEditingController _portController;
 
   late int _selectedInterval;
+  late int _selectedThreshold;
   String? _selectedGroupId;
   late DeviceType _selectedType;
   late CheckType _selectedCheckType;
 
   final List<int> _intervalOptions = [5, 10, 30, 60, 300, 600];
+  final List<int> _thresholdOptions = [1, 2, 3, 5, 10];
   static final RegExp _hostLikePattern = RegExp(r'^[A-Za-z0-9.-]+$');
 
   @override
@@ -41,6 +43,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       text: widget.device?.port?.toString() ?? '80',
     );
     _selectedInterval = widget.device?.interval ?? 10;
+    _selectedThreshold = widget.device?.failureThreshold ?? 1;
     _selectedGroupId = widget.device?.groupId;
     _selectedType = widget.device?.type ?? DeviceType.server;
     _selectedCheckType = widget.device?.checkType ?? CheckType.icmp;
@@ -73,6 +76,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         widget.device!.name = trimmedName;
         widget.device!.address = trimmedAddress;
         widget.device!.interval = _selectedInterval;
+        widget.device!.failureThreshold = _selectedThreshold;
         widget.device!.tags = tags;
         widget.device!.groupId = _selectedGroupId;
         widget.device!.type = _selectedType;
@@ -84,6 +88,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           name: trimmedName,
           address: trimmedAddress,
           interval: _selectedInterval,
+          failureThreshold: _selectedThreshold,
           tags: tags,
           groupId: _selectedGroupId,
           type: _selectedType,
@@ -329,6 +334,31 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             .toList(),
                         onChanged: (val) =>
                             setState(() => _selectedInterval = val!),
+                      ),
+                      const SizedBox(height: 16),
+                      DropdownButtonFormField<int>(
+                        initialValue: _selectedThreshold,
+                        style: GoogleFonts.inter(
+                          color: Theme.of(context).textTheme.bodyMedium?.color,
+                        ),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.repeat_outlined),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          labelText: 'Alert Threshold',
+                          helperText: 'Consecutive failures before alerting',
+                        ),
+                        items: _thresholdOptions
+                            .map(
+                              (t) => DropdownMenuItem(
+                                value: t,
+                                child: Text(t == 1 ? '1 failure (immediate)' : '$t consecutive failures'),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (val) =>
+                            setState(() => _selectedThreshold = val!),
                       ),
                       const SizedBox(height: 16),
                       _buildField(

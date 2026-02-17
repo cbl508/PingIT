@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:pingit/models/device_model.dart';
@@ -16,6 +16,7 @@ import 'package:pingit/services/storage_service.dart';
 import 'package:pingit/services/alert_service.dart';
 import 'package:pingit/services/notification_service.dart';
 import 'package:pingit/services/email_service.dart';
+import 'package:pingit/services/webhook_service.dart';
 import 'package:pingit/services/update_service.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -32,6 +33,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final AlertService _alertService = AlertService();
   final NotificationService _notificationService = NotificationService();
   final EmailService _emailService = EmailService();
+  final WebhookService _webhookService = WebhookService();
 
   List<Device> _devices = [];
   List<DeviceGroup> _groups = [];
@@ -41,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _isPolling = false;
   bool _isSaving = false;
   bool _pendingSave = false;
+  QuietHoursSettings _quietHours = QuietHoursSettings();
 
   @override
   void initState() {
@@ -91,16 +94,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final devices = await _storageService.loadDevices();
     final groups = await _storageService.loadGroups();
     final emailSettings = await _storageService.loadEmailSettings();
+    final webhookSettings = await _storageService.loadWebhookSettings();
+    final quietHours = await _storageService.loadQuietHours();
     _emailService.updateSettings(emailSettings);
+    _webhookService.updateSettings(webhookSettings);
+
+    // Restore runtime state from persisted history
+    for (var device in devices) {
+      if (device.history.isNotEmpty) {
+        final last = device.history.last;
+        device.status = last.status;
+        device.lastLatency = last.latencyMs;
+        device.packetLoss = last.packetLoss;
+        device.lastResponseCode = last.responseCode;
+      }
+    }
 
     if (!mounted) return;
     setState(() {
       _devices = devices;
       _groups = groups;
+      _quietHours = quietHours;
       _isLoading = false;
     });
 
-    // Check for updates in background
     _checkForUpdates();
   }
 
@@ -126,6 +143,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _updateDeviceStatuses() async {
     if (_devices.isEmpty || _isPolling) return;
+    // Set flag BEFORE any async work to prevent race conditions.
     _isPolling = true;
     try {
       await _pingService.pingAllDevices(
@@ -145,12 +163,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               }
             }
 
+            // Quiet hours suppression
+            if (_quietHours.isCurrentlyQuiet()) {
+              shouldSuppress = true;
+              debugPrint('Alert suppressed for ${d.name} during quiet hours.');
+            }
+
             if (!shouldSuppress) {
               unawaited(_alertService.playAlert(newS));
               unawaited(
                 _notificationService.showStatusChangeNotification(d, oldS, newS),
               );
               unawaited(_emailService.sendAlert(d, oldS, newS));
+              unawaited(_webhookService.sendAlert(d, oldS, newS));
             }
           }
         },
@@ -333,7 +358,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           if (index != -1) {
             _devices[index] = result;
           } else {
-            // Device was not in list (e.g. created via Quick Scan)
             _devices.add(result);
           }
         } else {
@@ -362,105 +386,180 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  void _handleBulkDelete(Set<String> ids) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${ids.length} devices?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        content: Text('This action cannot be undone.', style: GoogleFonts.inter()),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () {
+              setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
+              unawaited(_saveAll());
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleBulkMoveToGroup(Set<String> ids) {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('Move to Group', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        children: [
+          SimpleDialogOption(
+            onPressed: () {
+              setState(() {
+                for (var d in _devices) {
+                  if (ids.contains(d.id)) d.groupId = null;
+                }
+              });
+              unawaited(_saveAll());
+              Navigator.pop(context);
+            },
+            child: const Text('Unassigned'),
+          ),
+          ..._groups.map((g) => SimpleDialogOption(
+            onPressed: () {
+              setState(() {
+                for (var d in _devices) {
+                  if (ids.contains(d.id)) d.groupId = g.id;
+                }
+              });
+              unawaited(_saveAll());
+              Navigator.pop(context);
+            },
+            child: Text(g.name),
+          )),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Row(
-        children: [
-          NavigationRail(
-            selectedIndex: _selectedIndex,
-            onDestinationSelected: (index) =>
-                setState(() => _selectedIndex = index),
-            labelType: NavigationRailLabelType.selected,
-            leading: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child:
-                  Icon(
-                        Icons.shield_outlined,
-                        color: Theme.of(context).colorScheme.primary,
-                        size: 28,
-                      )
-                      .animate(onPlay: (c) => c.repeat(reverse: true))
-                      .scaleXY(end: 1.1, duration: 2.seconds),
-            ),
-            destinations: const [
-              NavigationRailDestination(
-                icon: Icon(Icons.grid_view_outlined),
-                selectedIcon: Icon(Icons.grid_view),
-                label: Text('Dashboard'),
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => _navigateToAddDeviceScreen(),
+        const SingleActivator(LogicalKeyboardKey.keyG, control: true): () => _addGroup(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          body: Row(
+            children: [
+              NavigationRail(
+                selectedIndex: _selectedIndex,
+                onDestinationSelected: (index) =>
+                    setState(() => _selectedIndex = index),
+                labelType: NavigationRailLabelType.selected,
+                leading: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child:
+                      Icon(
+                            Icons.shield_outlined,
+                            color: Theme.of(context).colorScheme.primary,
+                            size: 28,
+                          )
+                          .animate(onPlay: (c) => c.repeat(reverse: true))
+                          .scaleXY(end: 1.1, duration: 2.seconds),
+                ),
+                destinations: const [
+                  NavigationRailDestination(
+                    icon: Icon(Icons.grid_view_outlined),
+                    selectedIcon: Icon(Icons.grid_view),
+                    label: Text('Dashboard'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.hub_outlined),
+                    selectedIcon: Icon(Icons.hub),
+                    label: Text('Topology'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.terminal_outlined),
+                    selectedIcon: Icon(Icons.terminal),
+                    label: Text('Logs'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.tune_outlined),
+                    selectedIcon: Icon(Icons.tune),
+                    label: Text('Settings'),
+                  ),
+                ],
               ),
-              NavigationRailDestination(
-                icon: Icon(Icons.hub_outlined),
-                selectedIcon: Icon(Icons.hub),
-                label: Text('Topology'),
-              ),
-              NavigationRailDestination(
-                icon: Icon(Icons.terminal_outlined),
-                selectedIcon: Icon(Icons.terminal),
-                label: Text('Logs'),
-              ),
-              NavigationRailDestination(
-                icon: Icon(Icons.tune_outlined),
-                selectedIcon: Icon(Icons.tune),
-                label: Text('Settings'),
+              const VerticalDivider(thickness: 1, width: 1),
+              Expanded(
+                child: IndexedStack(
+                  index: _selectedIndex,
+                  children: [
+                    DeviceListScreen(
+                      devices: _devices,
+                      groups: _groups,
+                      isLoading: _isLoading,
+                      onUpdate: () => unawaited(_saveAll()),
+                      onGroupUpdate: () => unawaited(_saveAll()),
+                      onAddDevice: () => _navigateToAddDeviceScreen(),
+                      onQuickScan: (addr) => _navigateToAddDeviceScreen(
+                        existingDevice: Device(name: 'New Node', address: addr),
+                      ),
+                      onAddGroup: _addGroup,
+                      onRenameGroup: _renameGroup,
+                      onDeleteGroup: _deleteGroup,
+                      onEditDevice: (d) =>
+                          _navigateToAddDeviceScreen(existingDevice: d),
+                      onTapDevice: _navigateToDetailsScreen,
+                      onBulkDelete: _handleBulkDelete,
+                      onBulkMoveToGroup: _handleBulkMoveToGroup,
+                    ),
+                    TopologyScreen(
+                      devices: _devices,
+                      onUpdate: () => unawaited(_saveAll()),
+                    ),
+                    LogsScreen(
+                      devices: _devices,
+                      groups: _groups,
+                      onTapDevice: _navigateToDetailsScreen,
+                    ),
+                    SettingsScreen(
+                      devices: _devices,
+                      groups: _groups,
+                      onImported: (newDevices) {
+                        setState(() {
+                          final existingAddresses = _devices
+                              .map((d) => d.address.trim().toLowerCase())
+                              .toSet();
+                          final uniqueDevices = newDevices.where(
+                            (d) => existingAddresses.add(d.address.trim().toLowerCase()),
+                          );
+                          _devices.addAll(uniqueDevices);
+                        });
+                        unawaited(_saveAll());
+                      },
+                      onEmailSettingsChanged: (settings) {
+                        unawaited(_storageService.saveEmailSettings(settings));
+                        _emailService.updateSettings(settings);
+                      },
+                      onWebhookSettingsChanged: (settings) {
+                        unawaited(_storageService.saveWebhookSettings(settings));
+                        _webhookService.updateSettings(settings);
+                      },
+                      onQuietHoursChanged: (settings) {
+                        setState(() => _quietHours = settings);
+                        unawaited(_storageService.saveQuietHours(settings));
+                      },
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
-          const VerticalDivider(thickness: 1, width: 1),
-          Expanded(
-            child: IndexedStack(
-              index: _selectedIndex,
-              children: [
-                DeviceListScreen(
-                  devices: _devices,
-                  groups: _groups,
-                  isLoading: _isLoading,
-                  onUpdate: () => unawaited(_saveAll()),
-                  onGroupUpdate: () => unawaited(_saveAll()),
-                  onAddDevice: () => _navigateToAddDeviceScreen(),
-                  onQuickScan: (addr) => _navigateToAddDeviceScreen(
-                    existingDevice: Device(name: 'New Node', address: addr),
-                  ),
-                  onAddGroup: _addGroup,
-                  onRenameGroup: _renameGroup,
-                  onDeleteGroup: _deleteGroup,
-                  onEditDevice: (d) =>
-                      _navigateToAddDeviceScreen(existingDevice: d),
-                  onTapDevice: _navigateToDetailsScreen,
-                ),
-                TopologyScreen(
-                  devices: _devices,
-                  onUpdate: () => unawaited(_saveAll()),
-                ),
-                LogsScreen(
-                  devices: _devices,
-                  groups: _groups,
-                  onTapDevice: _navigateToDetailsScreen,
-                ),
-                SettingsScreen(
-                  devices: _devices,
-                  groups: _groups,
-                  onImported: (newDevices) {
-                    setState(() {
-                      final existingAddresses = _devices
-                          .map((d) => d.address.trim().toLowerCase())
-                          .toSet();
-                      final uniqueDevices = newDevices.where(
-                        (d) => existingAddresses.add(d.address.trim().toLowerCase()),
-                      );
-                      _devices.addAll(uniqueDevices);
-                    });
-                    unawaited(_saveAll());
-                  },
-                  onEmailSettingsChanged: (settings) {
-                    unawaited(_storageService.saveEmailSettings(settings));
-                    _emailService.updateSettings(settings);
-                  },
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

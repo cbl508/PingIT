@@ -6,6 +6,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/services/email_service.dart';
+import 'package:pingit/services/webhook_service.dart';
 
 class StorageService {
   static const String _emailPasswordKey = 'pingit_email_password';
@@ -16,24 +17,32 @@ class StorageService {
     return directory.path;
   }
 
-  // Devices Storage
   Future<File> get _devicesFile async {
     final path = await _localPath;
     return File('$path/devices.json');
   }
 
-  // Groups Storage
   Future<File> get _groupsFile async {
     final path = await _localPath;
     return File('$path/groups.json');
   }
 
-  // Email Settings Storage
   Future<File> get _emailSettingsFile async {
     final path = await _localPath;
     return File('$path/email_settings.json');
   }
 
+  Future<File> get _webhookSettingsFile async {
+    final path = await _localPath;
+    return File('$path/webhook_settings.json');
+  }
+
+  Future<File> get _quietHoursFile async {
+    final path = await _localPath;
+    return File('$path/quiet_hours.json');
+  }
+
+  // Devices
   Future<List<Device>> loadDevices() async {
     try {
       final file = await _devicesFile;
@@ -53,6 +62,7 @@ class StorageService {
     await file.writeAsString(jsonEncode(json));
   }
 
+  // Groups
   Future<List<DeviceGroup>> loadGroups() async {
     try {
       final file = await _groupsFile;
@@ -72,6 +82,7 @@ class StorageService {
     await file.writeAsString(jsonEncode(json));
   }
 
+  // Email Settings
   Future<EmailSettings> loadEmailSettings() async {
     try {
       final file = await _emailSettingsFile;
@@ -87,7 +98,6 @@ class StorageService {
         return fromFile.copyWith(password: securePassword);
       }
 
-      // Migration path: if password existed in legacy JSON, move it to secure storage.
       if (fromFile.password.isNotEmpty) {
         await _secureStorage.write(key: _emailPasswordKey, value: fromFile.password);
         await file.writeAsString(jsonEncode(fromFile.copyWith(password: '').toJson()));
@@ -104,5 +114,41 @@ class StorageService {
     final file = await _emailSettingsFile;
     await file.writeAsString(jsonEncode(settings.toJson()));
     await _secureStorage.write(key: _emailPasswordKey, value: settings.password);
+  }
+
+  // Webhook Settings
+  Future<WebhookSettings> loadWebhookSettings() async {
+    try {
+      final file = await _webhookSettingsFile;
+      if (!await file.exists()) return WebhookSettings();
+      final contents = await file.readAsString();
+      return WebhookSettings.fromJson(jsonDecode(contents));
+    } catch (e) {
+      debugPrint('Failed to load webhook settings: $e');
+      return WebhookSettings();
+    }
+  }
+
+  Future<void> saveWebhookSettings(WebhookSettings settings) async {
+    final file = await _webhookSettingsFile;
+    await file.writeAsString(jsonEncode(settings.toJson()));
+  }
+
+  // Quiet Hours
+  Future<QuietHoursSettings> loadQuietHours() async {
+    try {
+      final file = await _quietHoursFile;
+      if (!await file.exists()) return QuietHoursSettings();
+      final contents = await file.readAsString();
+      return QuietHoursSettings.fromJson(jsonDecode(contents));
+    } catch (e) {
+      debugPrint('Failed to load quiet hours: $e');
+      return QuietHoursSettings();
+    }
+  }
+
+  Future<void> saveQuietHours(QuietHoursSettings settings) async {
+    final file = await _quietHoursFile;
+    await file.writeAsString(jsonEncode(settings.toJson()));
   }
 }

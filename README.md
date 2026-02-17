@@ -7,12 +7,18 @@ Cross-platform infrastructure monitoring dashboard built with Flutter. Track the
 - **Multi-protocol health checks** - ICMP ping, TCP port connect, and HTTP/HTTPS monitoring
 - **Real-time dashboard** - Live status indicators, latency sparklines, and system HUD with pie chart breakdown
 - **Network topology** - Interactive drag-and-drop node graph with animated packet flow visualization
-- **Smart alerting** - Desktop notifications (Windows, Linux, macOS), email alerts via SMTP, and intelligent parent-based alert suppression
+- **Smart alerting** - Desktop notifications (Windows, Linux, macOS), email alerts via SMTP, webhook integration (Slack, Discord, generic JSON), and intelligent parent-based alert suppression
+- **Alert thresholds** - Configurable consecutive failure count before triggering offline alerts (reduces false positives)
+- **Quiet hours / maintenance windows** - Suppress notifications during scheduled time windows with per-day granularity
+- **SLA / uptime reporting** - 24h, 7-day, and 30-day uptime percentages with total downtime tracking per device
 - **Event stream** - Searchable, filterable log of all status change events with timestamps
 - **Device management** - Group devices into infrastructure zones, tag for categorization, configure per-device check intervals (5s to 10m)
-- **Stability scoring** - Combined uptime + packet loss reliability metric (70/30 weighted)
+- **Bulk operations** - Multi-select mode for batch delete and group reassignment
+- **Stability scoring** - Combined uptime + packet loss reliability metric (70/30 weighted) with score breakdown
+- **Persistent history** - Status history survives app restarts (up to 2000 entries per device)
 - **Data portability** - CSV import/export for device configurations and audit telemetry
 - **Automatic updates** - Checks GitHub Releases for new versions and applies updates in-place without a separate installer
+- **Keyboard shortcuts** - Ctrl+N (new device), Ctrl+G (new group), long-press for multi-select
 - **Secure credential storage** - Email passwords stored in OS-backed secure storage (Keychain, Keystore, etc.)
 - **Dark/light/system theme** - Material 3 design with custom color scheme
 
@@ -85,6 +91,7 @@ lib/
     ping_service.dart              # ICMP/TCP/HTTP health checking engine
     storage_service.dart           # File-based data persistence
     email_service.dart             # SMTP alert notifications
+    webhook_service.dart           # Webhook alerting (Slack, Discord, generic)
     notification_service.dart      # OS-level desktop notifications
     alert_service.dart             # Status change logging
     update_service.dart            # GitHub-based automatic updates

@@ -7,8 +7,9 @@ import 'package:pingit/models/device_model.dart';
 
 class PingService {
   static const int _pingCount = 3;
-  static const double _latencyWarningThreshold = 500.0; // 500ms
-  static const double _packetLossWarningThreshold = 10.0; // 10% loss
+  static const double _latencyWarningThreshold = 500.0;
+  static const double _packetLossWarningThreshold = 10.0;
+  static const int _maxHistory = 2000;
 
   Future<void> pingDevice(Device device, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
     if (device.isPaused) return;
@@ -26,7 +27,22 @@ class PingService {
 
     final result = await _performCheck(device);
 
-    device.status = result.status;
+    // Track consecutive failures for alert thresholds
+    if (result.status == DeviceStatus.offline) {
+      device.consecutiveFailures++;
+    } else {
+      device.consecutiveFailures = 0;
+    }
+
+    // Apply failure threshold: only transition to offline after N consecutive failures
+    DeviceStatus effectiveStatus = result.status;
+    if (result.status == DeviceStatus.offline &&
+        device.consecutiveFailures < device.failureThreshold &&
+        oldStatus != DeviceStatus.unknown) {
+      effectiveStatus = oldStatus;
+    }
+
+    device.status = effectiveStatus;
     device.lastLatency = result.latency;
     device.packetLoss = result.packetLoss;
     device.lastResponseCode = result.responseCode;
@@ -34,18 +50,18 @@ class PingService {
 
     device.history.add(StatusHistory(
       timestamp: now,
-      status: result.status,
+      status: effectiveStatus,
       latencyMs: result.latency,
       packetLoss: result.packetLoss,
       responseCode: result.responseCode,
     ));
 
-    if (device.history.length > 200) {
+    if (device.history.length > _maxHistory) {
       device.history.removeAt(0);
     }
 
-    if (result.status != oldStatus && onStatusChanged != null) {
-      onStatusChanged(device, oldStatus, result.status);
+    if (effectiveStatus != oldStatus && onStatusChanged != null) {
+      onStatusChanged(device, oldStatus, effectiveStatus);
     }
   }
 
@@ -72,7 +88,6 @@ class PingService {
       stopwatch.stop();
 
       final latency = stopwatch.elapsedMilliseconds.toDouble();
-      // Treat 2xx and 3xx as success (service is responding)
       final isSuccess = response.statusCode >= 200 && response.statusCode < 400;
 
       DeviceStatus status = isSuccess ? DeviceStatus.online : DeviceStatus.offline;
@@ -86,6 +101,9 @@ class PingService {
         packetLoss: isSuccess ? 0.0 : 100.0,
         responseCode: response.statusCode,
       );
+    } on TimeoutException {
+      stopwatch.stop();
+      return (status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null);
     } catch (e) {
       stopwatch.stop();
       return (status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null);
@@ -136,7 +154,7 @@ class PingService {
     return _getIcmpResultNative(address);
   }
 
-  /// Windows ICMP via ping.exe — no admin privileges required.
+  /// Windows ICMP via ping.exe — locale-independent parsing.
   Future<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})> _getIcmpResultWindows(String address) async {
     try {
       final result = await Process.run(
@@ -149,13 +167,16 @@ class PingService {
       int received = 0;
       double totalLatency = 0;
 
-      // Parse "Reply from X: bytes=32 time=12ms TTL=117" or "time<1ms"
-      final replyRegex = RegExp(r'time[=<](\d+)ms');
+      // Locale-independent: match lines containing "TTL" (universal across locales)
+      // and extract latency from "=Xms" or "<Xms" patterns on the same line.
+      final latencyRegex = RegExp(r'[=<]\s*(\d+)\s*ms', caseSensitive: false);
       for (final line in lines) {
-        final match = replyRegex.firstMatch(line);
-        if (match != null) {
+        if (line.toUpperCase().contains('TTL')) {
           received++;
-          totalLatency += double.parse(match.group(1)!);
+          final match = latencyRegex.firstMatch(line);
+          if (match != null) {
+            totalLatency += double.parse(match.group(1)!);
+          }
         }
       }
 
@@ -177,7 +198,7 @@ class PingService {
     }
   }
 
-  /// Native ICMP via dart_ping (Linux/macOS).
+  /// Native ICMP via dart_ping (Linux/macOS) with proper cleanup.
   Future<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})> _getIcmpResultNative(String address) async {
     final completer = Completer<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})>();
     final ping = Ping(address, count: _pingCount, timeout: 2);
@@ -185,57 +206,75 @@ class PingService {
     int received = 0;
     double totalLatency = 0;
 
-    ping.stream.listen(
+    // Guard timer: ensures we always complete even if the stream hangs.
+    final guard = Timer(const Duration(seconds: 10), () {
+      if (!completer.isCompleted) {
+        ping.stop();
+        completer.complete((status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null));
+      }
+    });
+
+    final sub = ping.stream.listen(
       (event) {
         if (event.response != null) {
-            received++;
-            if (event.response!.time != null) {
-                totalLatency += event.response!.time!.inMicroseconds / 1000.0;
-            }
+          received++;
+          if (event.response!.time != null) {
+            totalLatency += event.response!.time!.inMicroseconds / 1000.0;
+          }
         }
       },
       onDone: () {
+        guard.cancel();
         if (!completer.isCompleted) {
-            if (received > 0) {
-                final avgLatency = totalLatency / received;
-                final loss = ((_pingCount - received) / _pingCount) * 100.0;
+          if (received > 0) {
+            final avgLatency = totalLatency / received;
+            final loss = ((_pingCount - received) / _pingCount) * 100.0;
 
-                DeviceStatus status = DeviceStatus.online;
-                if (avgLatency > _latencyWarningThreshold || loss > _packetLossWarningThreshold) {
-                  status = DeviceStatus.degraded;
-                }
-
-                completer.complete((
-                    status: status,
-                    latency: avgLatency,
-                    packetLoss: loss,
-                    responseCode: null,
-                ));
-            } else {
-                completer.complete((
-                    status: DeviceStatus.offline,
-                    latency: null,
-                    packetLoss: 100.0,
-                    responseCode: null,
-                ));
+            DeviceStatus status = DeviceStatus.online;
+            if (avgLatency > _latencyWarningThreshold || loss > _packetLossWarningThreshold) {
+              status = DeviceStatus.degraded;
             }
+
+            completer.complete((
+              status: status,
+              latency: avgLatency,
+              packetLoss: loss,
+              responseCode: null,
+            ));
+          } else {
+            completer.complete((
+              status: DeviceStatus.offline,
+              latency: null,
+              packetLoss: 100.0,
+              responseCode: null,
+            ));
+          }
         }
       },
       onError: (e) {
-         if (!completer.isCompleted) {
-             completer.complete((status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null));
-         }
-      }
+        guard.cancel();
+        if (!completer.isCompleted) {
+          completer.complete((status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null));
+        }
+      },
     );
 
-    // Guard against hung streams that never complete
-    return completer.future.timeout(
-      const Duration(seconds: 10),
-      onTimeout: () => (status: DeviceStatus.offline, latency: null, packetLoss: 100.0, responseCode: null),
-    );
+    // When the guard fires, the subscription gets cancelled after ping.stop().
+    completer.future.then((_) => sub.cancel());
+
+    return completer.future;
   }
 
+  /// Only pings devices that are due based on their interval.
   Future<void> pingAllDevices(List<Device> devices, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
-    await Future.wait(devices.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+    final now = DateTime.now();
+    final due = devices.where((d) {
+      if (d.isPaused) return false;
+      if (d.lastPingTime == null) return true;
+      return now.difference(d.lastPingTime!).inSeconds >= d.interval;
+    }).toList();
+
+    if (due.isEmpty) return;
+    await Future.wait(due.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
   }
 }

@@ -79,6 +79,7 @@ class Device {
     this.lastLatency,
     this.packetLoss,
     this.lastResponseCode,
+    this.failureThreshold = 1,
     this.topologyX,
     this.topologyY,
     this.parentId,
@@ -96,6 +97,10 @@ class Device {
   CheckType checkType;
   int? port;
   bool isPaused;
+  int failureThreshold;
+
+  @JsonKey(includeFromJson: false, includeToJson: false)
+  int consecutiveFailures = 0;
 
   @JsonKey(includeFromJson: false, includeToJson: false)
   DeviceStatus status;

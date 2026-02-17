@@ -18,7 +18,7 @@ class TopologyScreen extends StatefulWidget {
 class _TopologyScreenState extends State<TopologyScreen>
     with SingleTickerProviderStateMixin {
   Device? _connectingSource;
-  Offset _mousePos = Offset.zero;
+  final ValueNotifier<Offset> _mouseNotifier = ValueNotifier(Offset.zero);
   late AnimationController _animationController;
 
   @override
@@ -33,6 +33,7 @@ class _TopologyScreenState extends State<TopologyScreen>
   @override
   void dispose() {
     _animationController.dispose();
+    _mouseNotifier.dispose();
     super.dispose();
   }
 
@@ -51,7 +52,7 @@ class _TopologyScreenState extends State<TopologyScreen>
             padding: const EdgeInsets.only(right: 16),
             child: Center(
               child: Text(
-                'Drag to position • Click to connect • Right-click to clear',
+                'Drag to position \u2022 Click to connect \u2022 Right-click to clear',
                 style: GoogleFonts.inter(fontSize: 11, color: Colors.grey),
               ),
             ),
@@ -59,18 +60,26 @@ class _TopologyScreenState extends State<TopologyScreen>
         ],
       ),
       body: MouseRegion(
-        onHover: (e) => setState(() => _mousePos = e.localPosition),
+        onHover: (e) {
+          // Update ValueNotifier instead of calling setState — avoids full widget rebuild.
+          _mouseNotifier.value = e.localPosition;
+        },
         child: Stack(
           children: [
-            CustomPaint(
-              size: Size.infinite,
-              painter: TopologyPainter(
-                devices: widget.devices,
-                connectingSource: _connectingSource,
-                mousePos: _mousePos,
-                isDark: isDark,
-                animation: _animationController,
-              ),
+            ValueListenableBuilder<Offset>(
+              valueListenable: _mouseNotifier,
+              builder: (context, mousePos, _) {
+                return CustomPaint(
+                  size: Size.infinite,
+                  painter: TopologyPainter(
+                    devices: widget.devices,
+                    connectingSource: _connectingSource,
+                    mousePos: mousePos,
+                    isDark: isDark,
+                    animation: _animationController,
+                  ),
+                );
+              },
             ),
             ...widget.devices.map((device) => _buildDraggableNode(device)),
           ],
@@ -117,7 +126,6 @@ class _TopologyScreenState extends State<TopologyScreen>
               } else if (_connectingSource == device) {
                 _connectingSource = null;
               } else {
-                // Use device id for parent reference
                 device.parentId = _connectingSource!.id;
                 _connectingSource = null;
                 widget.onUpdate();
@@ -197,7 +205,7 @@ class _TopologyScreenState extends State<TopologyScreen>
               device.address,
               style: GoogleFonts.jetBrainsMono(
                 fontSize: 10,
-                color: Theme.of(context).colorScheme.onSurfaceVariant
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
               textAlign: TextAlign.center,
               overflow: TextOverflow.ellipsis,
@@ -235,20 +243,13 @@ class TopologyPainter extends CustomPainter {
 
     for (var device in devices) {
       if (device.parentId != null && device.topologyX != null) {
-        // Look up parent by id
-        final parentMatches = devices.where(
-          (d) => d.id == device.parentId,
-        );
-        if (parentMatches.isEmpty) {
-          continue;
-        }
+        final parentMatches = devices.where((d) => d.id == device.parentId);
+        if (parentMatches.isEmpty) continue;
         final parent = parentMatches.first;
 
         if (parent.topologyX != null) {
-          final isParentDown =
-              parent.status == DeviceStatus.offline && !parent.isPaused;
-          final isDeviceDown =
-              device.status == DeviceStatus.offline && !device.isPaused;
+          final isParentDown = parent.status == DeviceStatus.offline && !parent.isPaused;
+          final isDeviceDown = device.status == DeviceStatus.offline && !device.isPaused;
 
           paint.color = isParentDown
               ? Colors.red.withValues(alpha: 0.5)
@@ -259,10 +260,7 @@ class TopologyPainter extends CustomPainter {
 
           final path = _drawConnection(canvas, start, end, paint);
 
-          if (!isParentDown &&
-              !isDeviceDown &&
-              !device.isPaused &&
-              !parent.isPaused) {
+          if (!isParentDown && !isDeviceDown && !device.isPaused && !parent.isPaused) {
             _drawPackets(canvas, path, packetPaint, device);
           }
         }
@@ -312,14 +310,7 @@ class TopologyPainter extends CustomPainter {
     path.moveTo(start.dx, start.dy);
     final controlPoint1 = Offset(start.dx, (start.dy + end.dy) / 2);
     final controlPoint2 = Offset(end.dx, (start.dy + end.dy) / 2);
-    path.cubicTo(
-      controlPoint1.dx,
-      controlPoint1.dy,
-      controlPoint2.dx,
-      controlPoint2.dy,
-      end.dx,
-      end.dy,
-    );
+    path.cubicTo(controlPoint1.dx, controlPoint1.dy, controlPoint2.dx, controlPoint2.dy, end.dx, end.dy);
     canvas.drawPath(path, paint);
     return path;
   }

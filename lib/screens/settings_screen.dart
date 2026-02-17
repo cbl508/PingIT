@@ -13,6 +13,7 @@ import 'package:pingit/models/device_model.dart';
 import 'package:pingit/services/email_service.dart';
 import 'package:pingit/services/storage_service.dart';
 import 'package:pingit/services/update_service.dart';
+import 'package:pingit/services/webhook_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -21,12 +22,16 @@ class SettingsScreen extends StatefulWidget {
     required this.groups,
     required this.onImported,
     required this.onEmailSettingsChanged,
+    required this.onWebhookSettingsChanged,
+    required this.onQuietHoursChanged,
   });
 
   final List<Device> devices;
   final List<DeviceGroup> groups;
   final Function(List<Device>) onImported;
   final Function(EmailSettings) onEmailSettingsChanged;
+  final Function(WebhookSettings) onWebhookSettingsChanged;
+  final Function(QuietHoursSettings) onQuietHoursChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -41,6 +46,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _emailEnabled = false;
   Timer? _settingsSaveDebounce;
 
+  // Webhook state
+  late TextEditingController _webhookUrlController;
+  WebhookType _webhookType = WebhookType.generic;
+  bool _webhookEnabled = false;
+
+  // Quiet hours state
+  bool _quietEnabled = false;
+  TimeOfDay _quietStart = const TimeOfDay(hour: 22, minute: 0);
+  TimeOfDay _quietEnd = const TimeOfDay(hour: 7, minute: 0);
+  Set<int> _quietDays = {1, 2, 3, 4, 5, 6, 7};
+
   // Update state
   UpdateInfo? _updateInfo;
   bool _isCheckingUpdate = false;
@@ -54,11 +70,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _userController = TextEditingController();
     _passController = TextEditingController();
     _recipientController = TextEditingController();
+    _webhookUrlController = TextEditingController();
     _loadSettings();
   }
 
   Future<void> _loadSettings() async {
     final settings = await _storageService.loadEmailSettings();
+    final webhook = await _storageService.loadWebhookSettings();
+    final quiet = await _storageService.loadQuietHours();
     if (!mounted) return;
     setState(() {
       _smtpController.text = settings.smtpServer;
@@ -66,6 +85,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passController.text = settings.password;
       _recipientController.text = settings.recipientEmail;
       _emailEnabled = settings.isEnabled;
+
+      _webhookUrlController.text = webhook.url;
+      _webhookType = webhook.type;
+      _webhookEnabled = webhook.enabled;
+
+      _quietEnabled = quiet.enabled;
+      _quietStart = TimeOfDay(hour: quiet.startHour, minute: quiet.startMinute);
+      _quietEnd = TimeOfDay(hour: quiet.endHour, minute: quiet.endMinute);
+      _quietDays = quiet.daysOfWeek.toSet();
     });
   }
 
@@ -76,10 +104,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _userController.dispose();
     _passController.dispose();
     _recipientController.dispose();
+    _webhookUrlController.dispose();
     super.dispose();
   }
 
-  void _saveSettings() {
+  void _saveEmailSettings() {
     _settingsSaveDebounce?.cancel();
     _settingsSaveDebounce = Timer(const Duration(milliseconds: 300), () {
       final settings = EmailSettings(
@@ -91,6 +120,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
       widget.onEmailSettingsChanged(settings);
     });
+  }
+
+  void _saveWebhookSettings() {
+    final settings = WebhookSettings(
+      url: _webhookUrlController.text,
+      type: _webhookType,
+      enabled: _webhookEnabled,
+    );
+    widget.onWebhookSettingsChanged(settings);
+  }
+
+  void _saveQuietHours() {
+    final settings = QuietHoursSettings(
+      enabled: _quietEnabled,
+      startHour: _quietStart.hour,
+      startMinute: _quietStart.minute,
+      endHour: _quietEnd.hour,
+      endMinute: _quietEnd.minute,
+      daysOfWeek: _quietDays.toList()..sort(),
+    );
+    widget.onQuietHoursChanged(settings);
   }
 
   Future<void> _checkForUpdate() async {
@@ -168,23 +218,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (outputPath == null || outputPath.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Export cancelled.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Export cancelled.')));
       return;
     }
 
     try {
       await File(outputPath).writeAsString(csvData);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('CSV exported to $outputPath')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('CSV exported to $outputPath')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to export CSV: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to export CSV: $e')));
     }
   }
 
@@ -215,10 +259,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       for (int i = 1; i < fields.length; i++) {
         try {
           final row = fields[i];
-          if (row.length < 2) {
-            skipped++;
-            continue;
-          }
+          if (row.length < 2) { skipped++; continue; }
 
           final name = row[0].toString().trim();
           final address = row[1].toString().trim();
@@ -228,10 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               existingAddresses.contains(normalizedAddress) ||
               importedAddresses.contains(normalizedAddress);
 
-          if (isInvalid || isDuplicate) {
-            skipped++;
-            continue;
-          }
+          if (isInvalid || isDuplicate) { skipped++; continue; }
 
           importedAddresses.add(normalizedAddress);
           newDevices.add(
@@ -246,11 +284,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         widget.onImported(newDevices);
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Imported ${newDevices.length} nodes. Skipped $skipped rows.',
-            ),
-          ),
+          SnackBar(content: Text('Imported ${newDevices.length} nodes. Skipped $skipped rows.')),
         );
       } else {
         if (!mounted) return;
@@ -267,7 +301,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (bytes == null) return null;
       return utf8.decode(bytes);
     }
-
     final path = result.files.single.path;
     if (path == null || path.isEmpty) return null;
     return File(path).readAsString();
@@ -300,16 +333,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     const Divider(height: 1),
                     ListTile(
                       leading: _isCheckingUpdate
-                          ? const SizedBox(
-                              width: 24, height: 24,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
+                          ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
                           : const Icon(Icons.system_update_outlined),
                       title: Text(_updateInfo != null
                           ? 'Update Available: v${_updateInfo!.version}'
-                          : _updateChecked
-                              ? 'You\'re up to date'
-                              : 'Check for Updates'),
+                          : _updateChecked ? 'You\'re up to date' : 'Check for Updates'),
                       subtitle: _updateInfo != null
                           ? Text(_updateInfo!.releaseNotes, maxLines: 3, overflow: TextOverflow.ellipsis)
                           : null,
@@ -317,10 +345,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? FilledButton(
                               onPressed: _isApplyingUpdate ? null : _applyUpdate,
                               child: _isApplyingUpdate
-                                  ? const SizedBox(
-                                      width: 16, height: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                    )
+                                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                   : const Text('Install'),
                             )
                           : null,
@@ -344,24 +369,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           padding: const EdgeInsets.symmetric(horizontal: 4),
                         ),
                         segments: const [
-                          ButtonSegment(
-                            value: ThemeMode.system,
-                            label: Text(
-                              'System',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                          ButtonSegment(
-                            value: ThemeMode.light,
-                            label: Text(
-                              'Light',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                          ButtonSegment(
-                            value: ThemeMode.dark,
-                            label: Text('Dark', style: TextStyle(fontSize: 12)),
-                          ),
+                          ButtonSegment(value: ThemeMode.system, label: Text('System', style: TextStyle(fontSize: 12))),
+                          ButtonSegment(value: ThemeMode.light, label: Text('Light', style: TextStyle(fontSize: 12))),
+                          ButtonSegment(value: ThemeMode.dark, label: Text('Dark', style: TextStyle(fontSize: 12))),
                         ],
                         selected: {themeNotifier.value},
                         onSelectionChanged: (selection) {
@@ -382,56 +392,151 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     children: [
                       SwitchListTile(
                         title: const Text('Enable Email Alerts'),
-                        subtitle: const Text(
-                          'Send alerts when devices go offline',
-                        ),
+                        subtitle: const Text('Send alerts when devices go offline'),
                         value: _emailEnabled,
                         onChanged: (val) {
                           setState(() => _emailEnabled = val);
-                          _saveSettings();
+                          _saveEmailSettings();
                         },
                       ),
                       const Divider(),
                       TextField(
                         controller: _smtpController,
-                        decoration: const InputDecoration(
-                          labelText: 'SMTP Server',
-                          hintText: 'smtp.gmail.com',
-                        ),
-                        onChanged: (_) => _saveSettings(),
+                        decoration: const InputDecoration(labelText: 'SMTP Server', hintText: 'smtp.gmail.com'),
+                        onChanged: (_) => _saveEmailSettings(),
                       ),
                       const SizedBox(height: 8),
                       TextField(
                         controller: _userController,
-                        decoration: const InputDecoration(
-                          labelText: 'Username (Email)',
-                        ),
-                        onChanged: (_) => _saveSettings(),
+                        decoration: const InputDecoration(labelText: 'Username (Email)'),
+                        onChanged: (_) => _saveEmailSettings(),
                       ),
                       const SizedBox(height: 8),
                       TextField(
                         controller: _passController,
-                        decoration: const InputDecoration(
-                          labelText: 'Password / App Key',
-                        ),
+                        decoration: const InputDecoration(labelText: 'Password / App Key'),
                         obscureText: true,
-                        onChanged: (_) => _saveSettings(),
+                        onChanged: (_) => _saveEmailSettings(),
                       ),
                       const SizedBox(height: 8),
                       TextField(
                         controller: _recipientController,
-                        decoration: const InputDecoration(
-                          labelText: 'Recipient Email',
-                        ),
-                        onChanged: (_) => _saveSettings(),
+                        decoration: const InputDecoration(labelText: 'Recipient Email'),
+                        onChanged: (_) => _saveEmailSettings(),
                       ),
                       const SizedBox(height: 12),
                       Text(
                         'Note: For Gmail, use an "App Password" rather than your primary password.',
-                        style: GoogleFonts.inter(
-                          fontSize: 10,
-                          color: Colors.orange,
+                        style: GoogleFonts.inter(fontSize: 10, color: Colors.orange),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              _buildSectionHeader('WEBHOOK INTEGRATION'),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Enable Webhook Alerts'),
+                        subtitle: const Text('POST JSON on status changes'),
+                        value: _webhookEnabled,
+                        onChanged: (val) {
+                          setState(() => _webhookEnabled = val);
+                          _saveWebhookSettings();
+                        },
+                      ),
+                      const Divider(),
+                      DropdownButtonFormField<WebhookType>(
+                        initialValue: _webhookType,
+                        decoration: const InputDecoration(labelText: 'Webhook Format'),
+                        items: const [
+                          DropdownMenuItem(value: WebhookType.generic, child: Text('Generic JSON')),
+                          DropdownMenuItem(value: WebhookType.slack, child: Text('Slack')),
+                          DropdownMenuItem(value: WebhookType.discord, child: Text('Discord')),
+                        ],
+                        onChanged: (val) {
+                          setState(() => _webhookType = val!);
+                          _saveWebhookSettings();
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _webhookUrlController,
+                        decoration: const InputDecoration(
+                          labelText: 'Webhook URL',
+                          hintText: 'https://hooks.slack.com/services/...',
                         ),
+                        onChanged: (_) => _saveWebhookSettings(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              _buildSectionHeader('QUIET HOURS / MAINTENANCE WINDOW'),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Enable Quiet Hours'),
+                        subtitle: const Text('Suppress notifications during scheduled times'),
+                        value: _quietEnabled,
+                        onChanged: (val) {
+                          setState(() => _quietEnabled = val);
+                          _saveQuietHours();
+                        },
+                      ),
+                      const Divider(),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ListTile(
+                              title: const Text('Start'),
+                              subtitle: Text(_quietStart.format(context)),
+                              trailing: const Icon(Icons.access_time),
+                              onTap: () async {
+                                final picked = await showTimePicker(context: context, initialTime: _quietStart);
+                                if (picked != null) {
+                                  setState(() => _quietStart = picked);
+                                  _saveQuietHours();
+                                }
+                              },
+                            ),
+                          ),
+                          Expanded(
+                            child: ListTile(
+                              title: const Text('End'),
+                              subtitle: Text(_quietEnd.format(context)),
+                              trailing: const Icon(Icons.access_time),
+                              onTap: () async {
+                                final picked = await showTimePicker(context: context, initialTime: _quietEnd);
+                                if (picked != null) {
+                                  setState(() => _quietEnd = picked);
+                                  _saveQuietHours();
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          _buildDayChip(1, 'Mon'),
+                          _buildDayChip(2, 'Tue'),
+                          _buildDayChip(3, 'Wed'),
+                          _buildDayChip(4, 'Thu'),
+                          _buildDayChip(5, 'Fri'),
+                          _buildDayChip(6, 'Sat'),
+                          _buildDayChip(7, 'Sun'),
+                        ],
                       ),
                     ],
                   ),
@@ -452,17 +557,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ListTile(
                       leading: const Icon(Icons.upload_file_outlined),
                       title: const Text('Bulk Import Infrastructure'),
-                      subtitle: const Text(
-                        'Import multiple nodes from CSV (Name, Address)',
-                      ),
+                      subtitle: const Text('Import multiple nodes from CSV (Name, Address)'),
                       onTap: _importCSV,
                     ),
                   ],
                 ),
               ),
+              const SizedBox(height: 24),
+              _buildSectionHeader('KEYBOARD SHORTCUTS'),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      _buildShortcutRow('Ctrl + N', 'Add new device'),
+                      _buildShortcutRow('Ctrl + G', 'Create new group'),
+                      _buildShortcutRow('Long Press', 'Enter multi-select mode'),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDayChip(int day, String label) {
+    final isSelected = _quietDays.contains(day);
+    return FilterChip(
+      label: Text(label, style: TextStyle(fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+      selected: isSelected,
+      onSelected: (val) {
+        setState(() {
+          if (val) {
+            _quietDays.add(day);
+          } else {
+            _quietDays.remove(day);
+          }
+        });
+        _saveQuietHours();
+      },
+    );
+  }
+
+  Widget _buildShortcutRow(String shortcut, String description) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(shortcut, style: GoogleFonts.jetBrainsMono(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 16),
+          Text(description, style: GoogleFonts.inter(fontSize: 13)),
+        ],
       ),
     );
   }
