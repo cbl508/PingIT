@@ -194,7 +194,7 @@ class _LogsScreenState extends State<LogsScreen> {
                       scrollDirection: Axis.horizontal,
                       child: Row(
                         children: [
-                          _buildFilterChip(0, 'All', totalCount, Icons.history, null),
+                          _buildFilterChip(0, 'All', totalCount, Icons.history, const Color(0xFF64748B)),
                           const SizedBox(width: 8),
                           _buildFilterChip(1, 'Online', onlineCount, Icons.check_circle_outline, Colors.green),
                           const SizedBox(width: 8),

@@ -675,5 +675,5 @@ Future<List<String>?> _runNmapScan({
   scrollController.dispose();
 
   if (addNode == true) return lines;
-  return lines;
+  return null;
 }
