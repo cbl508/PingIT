@@ -60,16 +60,6 @@ flutter build windows --release
 flutter build linux --release
 # Output: build/linux/x64/release/bundle/
 ```
-
-## CI/CD
-
-GitHub Actions automatically builds Windows and Linux releases when you push a version tag:
-
-```bash
-git tag v1.1.0
-git push origin v1.1.0
-```
-
 The workflow produces `pingit-windows.zip` and `pingit-linux.tar.gz` and attaches them to the GitHub Release. The built-in auto-updater checks these releases and applies updates in-place.
 
 ## Project Structure
