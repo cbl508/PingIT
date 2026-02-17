@@ -583,7 +583,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     }
 
     return Container(
-      height: 450,
+      height: 500,
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Theme.of(context).cardTheme.color,
@@ -607,11 +607,12 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                 child: SizedBox(
                   width: dynamicWidth,
                   child: Padding(
-                    padding: const EdgeInsets.only(right: 40, bottom: 10),
+                    padding: const EdgeInsets.only(right: 40, bottom: 4),
                     child: LineChart(
                       LineChartData(
                         minY: 0,
                         maxY: stats.maxLatency * 1.2 + 1,
+                        clipData: const FlClipData.all(),
                         gridData: FlGridData(
                           show: true, drawVerticalLine: false,
                           getDrawingHorizontalLine: (v) => FlLine(
@@ -621,18 +622,21 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                           rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                           topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                           bottomTitles: AxisTitles(
-                            axisNameWidget: Text('TIME OF PING (MM/dd HH:mm)',
+                            axisNameWidget: Text('TIME OF PING',
                                 style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                            axisNameSize: 25,
+                            axisNameSize: 20,
                             sideTitles: SideTitles(
-                              showTitles: true, reservedSize: 35, interval: max(5, (widget.device.history.length / 10).roundToDouble()),
+                              showTitles: true, reservedSize: 60, interval: max(5, (widget.device.history.length / 8).roundToDouble()),
                               getTitlesWidget: (v, m) {
                                 if (v.toInt() >= 0 && v.toInt() < widget.device.history.length) {
                                   final time = widget.device.history[v.toInt()].timestamp;
                                   return SideTitleWidget(
-                                    meta: m, space: 8,
-                                    child: Text(DateFormat('MM/dd HH:mm').format(time),
-                                        style: GoogleFonts.jetBrainsMono(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                                    meta: m, space: 12,
+                                    child: Transform.rotate(
+                                      angle: -0.5,
+                                      child: Text(DateFormat('MM/dd HH:mm').format(time),
+                                          style: GoogleFonts.jetBrainsMono(fontSize: 9, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                                    ),
                                   );
                                 }
                                 return const SizedBox.shrink();
@@ -651,15 +655,22 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                             ),
                           ),
                         ),
-                        borderData: FlBorderData(show: false),
+                        borderData: FlBorderData(
+                          show: true,
+                          border: Border(
+                            bottom: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.1)),
+                            left: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.1)),
+                          ),
+                        ),
                         lineTouchData: LineTouchData(
                           touchTooltipData: LineTouchTooltipData(
                             getTooltipColor: (spot) => const Color(0xFF1E293B),
+                            tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                             getTooltipItems: (touchedSpots) {
                               return touchedSpots.map((spot) {
                                 if (spot.x.toInt() >= 0 && spot.x.toInt() < widget.device.history.length) {
                                   final historyItem = widget.device.history[spot.x.toInt()];
-                                  final timeStr = DateFormat('yyyy-MM-dd HH:mm:ss.S').format(historyItem.timestamp);
+                                  final timeStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(historyItem.timestamp);
                                   return LineTooltipItem('$timeStr\n${spot.y.toStringAsFixed(1)} ms',
                                       GoogleFonts.jetBrainsMono(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12));
                                 }
@@ -731,7 +742,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                             style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 2),
                         Text(DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp),
-                            style: GoogleFonts.jetBrainsMono(fontSize: 9, color: Colors.grey)),
+                            style: GoogleFonts.jetBrainsMono(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                       ],
                     ),
                   ),

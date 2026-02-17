@@ -19,7 +19,7 @@ class LogsScreen extends StatefulWidget {
 }
 
 class _LogsScreenState extends State<LogsScreen> {
-  int _filterIndex = 0;
+  int _filterIndex = 0; // 0=All, 1=Online, 2=Degraded, 3=Offline, 4=Paused
   String _searchQuery = '';
 
   @override
@@ -28,10 +28,22 @@ class _LogsScreenState extends State<LogsScreen> {
         .expand((d) => d.history.map((h) => (device: d, log: h)))
         .toList();
 
-    if (_filterIndex == 1) {
-      allLogs = allLogs
-          .where((item) => item.log.status == DeviceStatus.offline)
-          .toList();
+    // Apply status filter
+    switch (_filterIndex) {
+      case 1:
+        allLogs = allLogs.where((item) => item.log.status == DeviceStatus.online).toList();
+        break;
+      case 2:
+        allLogs = allLogs.where((item) => item.log.status == DeviceStatus.degraded).toList();
+        break;
+      case 3:
+        allLogs = allLogs.where((item) => item.log.status == DeviceStatus.offline).toList();
+        break;
+      case 4:
+        // Paused devices — show all history from devices currently paused
+        final pausedIds = widget.devices.where((d) => d.isPaused).map((d) => d.id).toSet();
+        allLogs = allLogs.where((item) => pausedIds.contains(item.device.id)).toList();
+        break;
     }
 
     if (_searchQuery.isNotEmpty) {
@@ -49,6 +61,13 @@ class _LogsScreenState extends State<LogsScreen> {
     }
 
     allLogs.sort((a, b) => b.log.timestamp.compareTo(a.log.timestamp));
+
+    // Counts for filter badges
+    final totalCount = widget.devices.expand((d) => d.history).length;
+    final onlineCount = widget.devices.expand((d) => d.history).where((h) => h.status == DeviceStatus.online).length;
+    final degradedCount = widget.devices.expand((d) => d.history).where((h) => h.status == DeviceStatus.degraded).length;
+    final offlineCount = widget.devices.expand((d) => d.history).where((h) => h.status == DeviceStatus.offline).length;
+    final pausedDeviceCount = widget.devices.where((d) => d.isPaused).length;
 
     return Scaffold(
       appBar: AppBar(
@@ -85,34 +104,22 @@ class _LogsScreenState extends State<LogsScreen> {
                 padding: const EdgeInsets.only(bottom: 16, left: 16, right: 16),
                 child: Center(
                   child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 800),
-                    child: SegmentedButton<int>(
-                      style: SegmentedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    constraints: const BoxConstraints(maxWidth: 900),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _buildFilterChip(0, 'All', totalCount, Icons.history, null),
+                          const SizedBox(width: 8),
+                          _buildFilterChip(1, 'Online', onlineCount, Icons.check_circle_outline, Colors.green),
+                          const SizedBox(width: 8),
+                          _buildFilterChip(2, 'Degraded', degradedCount, Icons.warning_amber_rounded, Colors.orange),
+                          const SizedBox(width: 8),
+                          _buildFilterChip(3, 'Offline', offlineCount, Icons.error_outline, Colors.red),
+                          const SizedBox(width: 8),
+                          _buildFilterChip(4, 'Paused', pausedDeviceCount, Icons.pause_circle_outline, Colors.blueGrey),
+                        ],
                       ),
-                      segments: const [
-                        ButtonSegment(
-                          value: 0,
-                          label: Text(
-                            'Full Audit',
-                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                            overflow: TextOverflow.visible,
-                          ),
-                          icon: Icon(Icons.history, size: 20),
-                        ),
-                        ButtonSegment(
-                          value: 1,
-                          label: Text(
-                            'Critical',
-                            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                            overflow: TextOverflow.visible,
-                          ),
-                          icon: Icon(Icons.emergency_outlined, size: 20),
-                        ),
-                      ],
-                      selected: {_filterIndex},
-                      onSelectionChanged: (val) =>
-                          setState(() => _filterIndex = val.first),
                     ),
                   ),
                 ),
@@ -121,119 +128,180 @@ class _LogsScreenState extends State<LogsScreen> {
           ),
         ),
       ),
-      body: ListView.builder(
-        itemCount: allLogs.length.clamp(0, 1000),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        itemBuilder: (context, index) {
-          final item = allLogs[index];
-          final isSuccess = item.log.status == DeviceStatus.online;
+      body: allLogs.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.inbox_outlined, size: 48, color: Theme.of(context).disabledColor),
+                  const SizedBox(height: 12),
+                  Text('No events match this filter',
+                      style: GoogleFonts.inter(color: Theme.of(context).disabledColor)),
+                ],
+              ),
+            )
+          : ListView.builder(
+              itemCount: allLogs.length.clamp(0, 1000),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              itemBuilder: (context, index) {
+                final item = allLogs[index];
+                final statusColor = _statusColor(item.log.status);
 
-          return Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: (isSuccess ? Colors.green : Colors.red).withValues(
-                  alpha: 0.1,
-                ),
-              ),
-            ),
-            child: ListTile(
-              dense: true,
-              leading: Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: (isSuccess ? Colors.green : (item.log.status == DeviceStatus.degraded ? Colors.orange : Colors.red)).withValues(
-                    alpha: 0.1,
-                  ),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  isSuccess
-                      ? Icons.check_circle_outline
-                      : (item.log.status == DeviceStatus.degraded ? Icons.warning_amber_rounded : Icons.error_outline),
-                  color: isSuccess ? Colors.green : (item.log.status == DeviceStatus.degraded ? Colors.orange : Colors.red),
-                  size: 18,
-                ),
-              ),
-              title: Row(
-                children: [
-                  Text(
-                    item.device.name,
-                    style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-                  ),
-                  const Spacer(),
-                  Text(
-                    DateFormat('HH:mm:ss • MMM dd').format(item.log.timestamp),
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 10,
-                      color: Colors.grey,
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).cardColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: statusColor.withValues(alpha: 0.1),
                     ),
                   ),
-                ],
-              ),
-              subtitle: Row(
-                children: [
-                  Icon(item.device.typeIcon, size: 12, color: Colors.grey),
-                  const SizedBox(width: 4),
-                  Text(
-                    item.device.address,
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 11,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  const Spacer(),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: (isSuccess ? Colors.blue : (item.log.status == DeviceStatus.degraded ? Colors.orange : Colors.red)).withValues(
-                        alpha: 0.05,
+                  child: ListTile(
+                    dense: true,
+                    leading: Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.1),
+                        shape: BoxShape.circle,
                       ),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      isSuccess
-                          ? '${item.log.latencyMs?.toStringAsFixed(1)}ms'
-                          : (item.log.status == DeviceStatus.degraded ? '${item.log.latencyMs?.toStringAsFixed(1)}ms' : 'DROPPED'),
-                      style: GoogleFonts.jetBrainsMono(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: isSuccess ? Colors.blue : (item.log.status == DeviceStatus.degraded ? Colors.orange : Colors.red),
+                      child: Icon(
+                        _statusIcon(item.log.status),
+                        color: statusColor,
+                        size: 18,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              trailing: PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert, size: 18, color: Colors.grey),
-                onSelected: (val) {
-                  if (val == 'navigate') {
-                    widget.onTapDevice(item.device);
-                  }
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: 'navigate',
-                    child: Row(
+                    title: Row(
                       children: [
-                        Icon(Icons.analytics_outlined, size: 18),
-                        SizedBox(width: 12),
-                        Text('View Node Details'),
+                        Text(
+                          item.device.name,
+                          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        Text(
+                          DateFormat('HH:mm:ss \u2022 MMM dd').format(item.log.timestamp),
+                          style: GoogleFonts.jetBrainsMono(
+                            fontSize: 10,
+                            color: Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                    subtitle: Row(
+                      children: [
+                        Icon(item.device.typeIcon, size: 12, color: Colors.grey),
+                        const SizedBox(width: 4),
+                        Text(
+                          item.device.address,
+                          style: GoogleFonts.jetBrainsMono(
+                            fontSize: 11,
+                            color: Colors.grey,
+                          ),
+                        ),
+                        const Spacer(),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _statusLabel(item.log),
+                            style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: statusColor,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    trailing: PopupMenuButton<String>(
+                      icon: const Icon(Icons.more_vert, size: 18, color: Colors.grey),
+                      onSelected: (val) {
+                        if (val == 'navigate') {
+                          widget.onTapDevice(item.device);
+                        }
+                      },
+                      itemBuilder: (context) => [
+                        const PopupMenuItem(
+                          value: 'navigate',
+                          child: Row(
+                            children: [
+                              Icon(Icons.analytics_outlined, size: 18),
+                              SizedBox(width: 12),
+                              Text('View Node Details'),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                ],
-              ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
+  }
+
+  Widget _buildFilterChip(int index, String label, int count, IconData icon, Color? color) {
+    final isSelected = _filterIndex == index;
+    final effectiveColor = color ?? Theme.of(context).colorScheme.primary;
+    return FilterChip(
+      selected: isSelected,
+      showCheckmark: false,
+      avatar: Icon(icon, size: 16, color: isSelected ? Colors.white : effectiveColor),
+      label: Text(
+        '$label ($count)',
+        style: GoogleFonts.inter(
+          fontSize: 12,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          color: isSelected ? Colors.white : null,
+        ),
+      ),
+      selectedColor: effectiveColor,
+      onSelected: (_) => setState(() => _filterIndex = index),
+    );
+  }
+
+  Color _statusColor(DeviceStatus status) {
+    switch (status) {
+      case DeviceStatus.online:
+        return Colors.green;
+      case DeviceStatus.degraded:
+        return Colors.orange;
+      case DeviceStatus.offline:
+        return Colors.red;
+      default:
+        return Colors.blueGrey;
+    }
+  }
+
+  IconData _statusIcon(DeviceStatus status) {
+    switch (status) {
+      case DeviceStatus.online:
+        return Icons.check_circle_outline;
+      case DeviceStatus.degraded:
+        return Icons.warning_amber_rounded;
+      case DeviceStatus.offline:
+        return Icons.error_outline;
+      default:
+        return Icons.pause_circle_outline;
+    }
+  }
+
+  String _statusLabel(StatusHistory log) {
+    switch (log.status) {
+      case DeviceStatus.online:
+        return '${log.latencyMs?.toStringAsFixed(1)}ms';
+      case DeviceStatus.degraded:
+        return '${log.latencyMs?.toStringAsFixed(1)}ms';
+      case DeviceStatus.offline:
+        return 'DROPPED';
+      default:
+        return 'PAUSED';
+    }
   }
 }

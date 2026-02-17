@@ -70,7 +70,7 @@ void showScanInputDialog({
               ),
               const SizedBox(height: 12),
               Text(
-                'Quick Scan: Built-in TCP port scan (no external tools needed)\nDeep Scan: Full nmap service/OS detection (requires nmap)',
+                'Quick Scan: Port scan + DNS + service banners (no external tools)\nDeep Scan: Ports, services, OS, MAC, scripts, traceroute (requires nmap)',
                 style: GoogleFonts.inter(fontSize: 11, color: Colors.grey),
               ),
             ],
@@ -86,6 +86,10 @@ void showScanInputDialog({
             ),
             FilledButton(
               onPressed: () => startScan(ScanType.deep, dialogContext),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF334155),
+                foregroundColor: const Color(0xFF94A3B8),
+              ),
               child: const Text('Deep Scan'),
             ),
           ],
@@ -119,9 +123,9 @@ Future<List<String>?> _runBuiltInScan({
 }) async {
   final StreamController<String> logStream = StreamController<String>();
   final List<String> lines = [
-    '[SYSTEM] Initializing Quick TCP Port Scan...',
+    '[SYSTEM] Initializing Quick Scan...',
     '[TARGET] $address',
-    '[PORTS] Scanning ${_commonPorts.length} common ports...',
+    '[SCOPE]  DNS resolution, ${_commonPorts.length} port scan, banner grab',
     '',
   ];
   final scrollController = ScrollController();
@@ -190,13 +194,19 @@ Future<List<String>?> _runBuiltInScan({
                   itemBuilder: (context, i) => Text(
                     lines[i],
                     style: GoogleFonts.jetBrainsMono(
-                      color: lines[i].contains('[OPEN]')
+                      color: lines[i].contains('[OPEN]') || lines[i].contains('[RESULT]')
                           ? const Color(0xFF34D399)
                           : lines[i].contains('[ERROR]') || lines[i].contains('[SYSTEM ERR]')
                               ? Colors.redAccent
-                              : lines[i].contains('[SYSTEM]')
+                              : lines[i].contains('[SYSTEM]') || lines[i].contains('[PHASE]')
                                   ? const Color(0xFF60A5FA)
-                                  : const Color(0xFF94A3B8),
+                                  : lines[i].contains('[BANNER]')
+                                      ? const Color(0xFFFBBF24)
+                                      : lines[i].contains('[DNS]') || lines[i].contains('[RDNS]') || lines[i].contains('[PING]')
+                                          ? const Color(0xFF818CF8)
+                                          : lines[i].startsWith('═')
+                                              ? const Color(0xFF60A5FA)
+                                              : const Color(0xFF94A3B8),
                       fontSize: 12,
                     ),
                   ),
@@ -215,6 +225,10 @@ Future<List<String>?> _runBuiltInScan({
                     },
                     icon: const Icon(Icons.add),
                     label: const Text('ADD AS NODE'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF334155),
+                      foregroundColor: const Color(0xFF94A3B8),
+                    ),
                   ),
               ],
             ),
@@ -231,43 +245,125 @@ Future<List<String>?> _runBuiltInScan({
 }
 
 Future<void> _performTcpScan(String address, List<String> lines, void Function(String) emit) async {
+  // --- Phase 1: DNS / Reverse DNS Resolution ---
+  lines.add('[PHASE] 1/3 — Host Discovery');
+  emit('update');
+  try {
+    final resolved = await InternetAddress.lookup(address);
+    if (resolved.isNotEmpty) {
+      final ip = resolved.first.address;
+      lines.add('[DNS]   $address → $ip');
+      // Attempt reverse lookup
+      try {
+        final reverse = await InternetAddress(ip).reverse();
+        lines.add('[RDNS]  $ip → ${reverse.host}');
+      } catch (_) {
+        lines.add('[RDNS]  Reverse lookup not available');
+      }
+    }
+  } catch (_) {
+    lines.add('[DNS]   Could not resolve $address');
+  }
+  emit('update');
+
+  // --- Phase 2: Ping / Latency ---
+  try {
+    final sw = Stopwatch()..start();
+    final socket = await Socket.connect(address, 80, timeout: const Duration(seconds: 3));
+    sw.stop();
+    socket.destroy();
+    lines.add('[PING]  Host is reachable (${sw.elapsedMilliseconds}ms via TCP/80)');
+  } catch (_) {
+    try {
+      final sw = Stopwatch()..start();
+      final socket = await Socket.connect(address, 443, timeout: const Duration(seconds: 3));
+      sw.stop();
+      socket.destroy();
+      lines.add('[PING]  Host is reachable (${sw.elapsedMilliseconds}ms via TCP/443)');
+    } catch (_) {
+      lines.add('[PING]  Host may be unreachable or blocking common ports');
+    }
+  }
+  lines.add('');
+  emit('update');
+
+  // --- Phase 3: Port Scan with Banner Grabbing ---
+  lines.add('[PHASE] 2/3 — Port Scan (${_commonPorts.length} ports)');
+  emit('update');
   final openPorts = <int>[];
+  final portBanners = <int, String>{};
   final ports = _commonPorts.keys.toList()..sort();
 
-  // Scan in batches of 20 concurrent connections
   for (int i = 0; i < ports.length; i += 20) {
     final batch = ports.sublist(i, (i + 20).clamp(0, ports.length));
     final futures = batch.map((port) async {
       try {
         final socket = await Socket.connect(address, port, timeout: const Duration(seconds: 1));
+        // Attempt banner grab — read for up to 2 seconds
+        String? banner;
+        try {
+          socket.write('\r\n');
+          final data = await socket.timeout(const Duration(seconds: 2)).first;
+          final raw = String.fromCharCodes(data).trim();
+          if (raw.isNotEmpty) {
+            banner = raw.length > 80 ? raw.substring(0, 80) : raw;
+            // Clean non-printable characters
+            banner = banner.replaceAll(RegExp(r'[^\x20-\x7E]'), '.');
+          }
+        } catch (_) {
+          // No banner available — that's fine
+        }
         socket.destroy();
-        return port;
+        return (port: port, banner: banner);
       } catch (_) {
-        return -1;
+        return (port: -1, banner: null);
       }
     });
 
     final results = await Future.wait(futures);
-    for (final port in results) {
-      if (port > 0) {
-        openPorts.add(port);
-        final service = _commonPorts[port] ?? 'Unknown';
-        lines.add('[OPEN]  Port $port/tcp  $service');
+    for (final result in results) {
+      if (result.port > 0) {
+        openPorts.add(result.port);
+        final service = _commonPorts[result.port] ?? 'Unknown';
+        if (result.banner != null) {
+          portBanners[result.port] = result.banner!;
+        }
+        lines.add('[OPEN]  Port ${result.port}/tcp  $service');
         emit('update');
       }
     }
 
-    // Progress update
     final scanned = (i + batch.length).clamp(0, ports.length);
     lines.add('[SCAN]  Scanned $scanned/${ports.length} ports...');
     emit('update');
   }
 
+  // --- Phase 4: Service Banners Summary ---
+  if (portBanners.isNotEmpty) {
+    lines.add('');
+    lines.add('[PHASE] 3/3 — Service Banners');
+    emit('update');
+    for (final entry in portBanners.entries) {
+      final service = _commonPorts[entry.key] ?? 'Unknown';
+      lines.add('[BANNER] ${entry.key}/tcp ($service): ${entry.value}');
+      emit('update');
+    }
+  }
+
+  // --- Summary ---
   lines.add('');
+  lines.add('═══════════════════════════════════════════');
+  lines.add('[SYSTEM] SCAN SUMMARY');
+  lines.add('═══════════════════════════════════════════');
   if (openPorts.isEmpty) {
-    lines.add('[SYSTEM] No open ports found on common ports.');
+    lines.add('[RESULT] No open ports found on common ports.');
   } else {
-    lines.add('[SYSTEM] Found ${openPorts.length} open port(s): ${openPorts.join(", ")}');
+    lines.add('[RESULT] ${openPorts.length} open port(s): ${openPorts.join(", ")}');
+    for (final port in openPorts) {
+      final service = _commonPorts[port] ?? 'Unknown';
+      final banner = portBanners[port];
+      lines.add('[RESULT]   $port/tcp  $service${banner != null ? '  [$banner]' : ''}');
+    }
   }
   lines.add('[SYSTEM] Quick scan completed.');
 }
@@ -280,13 +376,14 @@ Future<List<String>?> _runNmapScan({
   bool showAddButton = false,
 }) async {
   final StreamController<String> logStream = StreamController<String>();
-  final args = ['-sV', '-sC', '-O', '-A', '-T4', address];
+  final args = ['-sV', '-sC', '-O', '-A', '-T4', '--reason', '-Pn', address];
   final List<String> lines = [
     '[SYSTEM] Initializing Deep Infrastructure Scan...',
     '[TARGET] $address',
     '[CMD] nmap ${args.join(' ')}',
+    '[SCOPE]  Ports, services, OS, MAC address, NSE scripts, traceroute',
     '',
-    'Starting Nmap (service/version/OS/script detection)...',
+    'Starting Nmap (full enumeration)...',
   ];
   final scrollController = ScrollController();
 
@@ -442,6 +539,10 @@ Future<List<String>?> _runNmapScan({
                       },
                       icon: const Icon(Icons.add),
                       label: const Text('ADD AS NODE'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF334155),
+                        foregroundColor: const Color(0xFF94A3B8),
+                      ),
                     ),
                 ],
               ),
