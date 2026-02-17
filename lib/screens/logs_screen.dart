@@ -143,28 +143,46 @@ class _LogsScreenState extends State<LogsScreen> {
           style: GoogleFonts.inter(fontWeight: FontWeight.bold),
         ),
         actions: [
-          SegmentedButton<_FontSize>(
-            segments: const [
-              ButtonSegment(value: _FontSize.small, label: Text('S')),
-              ButtonSegment(value: _FontSize.medium, label: Text('M')),
-              ButtonSegment(value: _FontSize.large, label: Text('L')),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'Options',
+            onSelected: (val) {
+              if (val == 'export') {
+                _exportCsv();
+              } else if (val == 'small') {
+                setState(() => _fontSize = _FontSize.small);
+              } else if (val == 'medium') {
+                setState(() => _fontSize = _FontSize.medium);
+              } else if (val == 'large') {
+                setState(() => _fontSize = _FontSize.large);
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'export', child: Row(children: [
+                Icon(Icons.download_outlined, size: 18), SizedBox(width: 12), Text('Export CSV'),
+              ])),
+              const PopupMenuDivider(),
+              PopupMenuItem(value: 'small', child: Row(children: [
+                Icon(Icons.text_fields, size: 18, color: _fontSize == _FontSize.small ? Theme.of(context).colorScheme.primary : null),
+                const SizedBox(width: 12),
+                Text('Small Text', style: TextStyle(fontWeight: _fontSize == _FontSize.small ? FontWeight.bold : FontWeight.normal)),
+              ])),
+              PopupMenuItem(value: 'medium', child: Row(children: [
+                Icon(Icons.text_fields, size: 18, color: _fontSize == _FontSize.medium ? Theme.of(context).colorScheme.primary : null),
+                const SizedBox(width: 12),
+                Text('Medium Text', style: TextStyle(fontWeight: _fontSize == _FontSize.medium ? FontWeight.bold : FontWeight.normal)),
+              ])),
+              PopupMenuItem(value: 'large', child: Row(children: [
+                Icon(Icons.text_fields, size: 18, color: _fontSize == _FontSize.large ? Theme.of(context).colorScheme.primary : null),
+                const SizedBox(width: 12),
+                Text('Large Text', style: TextStyle(fontWeight: _fontSize == _FontSize.large ? FontWeight.bold : FontWeight.normal)),
+              ])),
             ],
-            selected: {_fontSize},
-            onSelectionChanged: (v) => setState(() => _fontSize = v.first),
-            style: SegmentedButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          const SizedBox(width: 12),
-          IconButton(
-            icon: const Icon(Icons.download_outlined),
-            tooltip: 'Export CSV',
-            onPressed: _exportCsv,
           ),
           const SizedBox(width: 8),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(140),
+          preferredSize: const Size.fromHeight(110),
           child: Column(
             children: [
               Padding(
@@ -184,29 +202,18 @@ class _LogsScreenState extends State<LogsScreen> {
                   onChanged: (val) => setState(() => _searchQuery = val),
                 ),
               ),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.only(bottom: 16, left: 16, right: 16),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 900),
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          _buildFilterChip(0, 'All', totalCount, Icons.history, const Color(0xFF64748B)),
-                          const SizedBox(width: 8),
-                          _buildFilterChip(1, 'Online', onlineCount, Icons.check_circle_outline, Colors.green),
-                          const SizedBox(width: 8),
-                          _buildFilterChip(2, 'Degraded', degradedCount, Icons.warning_amber_rounded, Colors.orange),
-                          const SizedBox(width: 8),
-                          _buildFilterChip(3, 'Offline', offlineCount, Icons.error_outline, Colors.red),
-                          const SizedBox(width: 8),
-                          _buildFilterChip(4, 'Paused', pausedDeviceCount, Icons.pause_circle_outline, Colors.blueGrey),
-                        ],
-                      ),
-                    ),
-                  ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12, left: 16, right: 16),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _buildFilterChip(0, 'All', totalCount, Icons.history, const Color(0xFF64748B)),
+                    _buildFilterChip(1, 'Online', onlineCount, Icons.check_circle_outline, Colors.green),
+                    _buildFilterChip(2, 'Degraded', degradedCount, Icons.warning_amber_rounded, Colors.orange),
+                    _buildFilterChip(3, 'Offline', offlineCount, Icons.error_outline, Colors.red),
+                    _buildFilterChip(4, 'Paused', pausedDeviceCount, Icons.pause_circle_outline, Colors.blueGrey),
+                  ],
                 ),
               ),
             ],

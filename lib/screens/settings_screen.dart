@@ -491,7 +491,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       const Divider(),
                       DropdownButtonFormField<WebhookType>(
                         initialValue: _webhookType,
-                        decoration: const InputDecoration(labelText: 'Webhook Format'),
+                        decoration: const InputDecoration(
+                          labelText: 'Webhook Format',
+                          floatingLabelBehavior: FloatingLabelBehavior.always,
+                        ),
                         items: const [
                           DropdownMenuItem(value: WebhookType.generic, child: Text('Generic JSON')),
                           DropdownMenuItem(value: WebhookType.slack, child: Text('Slack')),
