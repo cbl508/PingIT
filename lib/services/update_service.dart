@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 class UpdateService {
   static const String githubOwner = 'cbl508';
   static const String githubRepo = 'PingIT';
-  static const String currentVersion = '1.0.0';
+  static const String currentVersion = '1.1.0';
 
   /// Check GitHub Releases API for a newer version.
   Future<UpdateInfo?> checkForUpdate() async {
@@ -52,29 +52,56 @@ class UpdateService {
     return null;
   }
 
-  /// Download and stage the update. Returns true if the updater script was
-  /// launched successfully. The caller should then exit the app so the
-  /// script can replace the running binary.
-  Future<bool> downloadAndApply(UpdateInfo info) async {
+  /// Download and stage the update with optional progress callback.
+  /// Returns true if the updater script was launched successfully.
+  Future<bool> downloadAndApply(
+    UpdateInfo info, {
+    void Function(double progress)? onProgress,
+  }) async {
     try {
       final tempDir = await getTemporaryDirectory();
       final updateDir = Directory('${tempDir.path}${Platform.pathSeparator}pingit_update');
       if (await updateDir.exists()) await updateDir.delete(recursive: true);
       await updateDir.create(recursive: true);
 
-      // Download the release archive
-      final response = await http.get(Uri.parse(info.downloadUrl));
-      if (response.statusCode != 200) return false;
+      // Streaming download with progress tracking
+      final client = http.Client();
+      try {
+        final request = http.Request('GET', Uri.parse(info.downloadUrl));
+        final response = await client.send(request).timeout(const Duration(seconds: 120));
+        if (response.statusCode != 200) return false;
 
-      final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
-      await zipFile.writeAsBytes(response.bodyBytes);
+        final contentLength = response.contentLength ?? 0;
+        final bytes = <int>[];
+        int received = 0;
+
+        await for (final chunk in response.stream) {
+          bytes.addAll(chunk);
+          received += chunk.length;
+          if (contentLength > 0 && onProgress != null) {
+            onProgress(received / contentLength);
+          }
+        }
+
+        final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
+        await zipFile.writeAsBytes(bytes);
+      } finally {
+        client.close();
+      }
 
       // Extract
+      final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
       final extractDir = Directory('${updateDir.path}${Platform.pathSeparator}extracted');
       await extractDir.create(recursive: true);
 
-      final bytes = await zipFile.readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      final archiveBytes = await zipFile.readAsBytes();
+      Archive archive;
+      if (info.downloadUrl.endsWith('.tar.gz') || info.downloadUrl.endsWith('.tgz')) {
+        archive = TarDecoder().decodeBytes(GZipDecoder().decodeBytes(archiveBytes));
+      } else {
+        archive = ZipDecoder().decodeBytes(archiveBytes);
+      }
+
       for (final file in archive) {
         final filePath = '${extractDir.path}${Platform.pathSeparator}${file.name}';
         if (file.isFile) {

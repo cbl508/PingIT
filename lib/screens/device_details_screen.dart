@@ -4,9 +4,11 @@ import 'dart:io';
 import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/screens/add_device_screen.dart';
+import 'package:pingit/widgets/scan_dialog.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:intl/intl.dart';
 
@@ -15,10 +17,12 @@ class DeviceDetailsScreen extends StatefulWidget {
     super.key,
     required this.device,
     this.groups = const [],
+    this.allDevices = const [],
   });
 
   final Device device;
   final List<DeviceGroup> groups;
+  final List<Device> allDevices;
 
   @override
   State<DeviceDetailsScreen> createState() => _DeviceDetailsScreenState();
@@ -56,8 +60,11 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            AddDeviceScreen(device: widget.device, groups: widget.groups),
+        builder: (context) => AddDeviceScreen(
+          device: widget.device,
+          groups: widget.groups,
+          existingDevices: widget.allDevices,
+        ),
       ),
     );
     if (!mounted) return;
@@ -69,122 +76,23 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     }
   }
 
-  Future<void> _runDeepScan() async {
-    final StreamController<String> logStream = StreamController<String>();
-    final List<String> lines = [
-      '[SYSTEM] Initializing Deep Security Scan...',
-      '[TARGET] ${widget.device.address}',
-      '[CMD] nmap -sV -O -T4 ${widget.device.address}',
-      '',
-      'Starting Nmap (service/OS detection)...',
-    ];
-    final scrollController = ScrollController();
-
-    Process? process;
-    StreamSubscription<String>? stdoutSub;
-    StreamSubscription<String>? stderrSub;
-    bool isClosed = false;
-
-    void emit(String message) {
-      if (!isClosed) logStream.add(message);
-    }
-
-    Future<void> closeStream() async {
-      if (!isClosed) {
-        isClosed = true;
-        await logStream.close();
-      }
-    }
-
-    void killProcess() {
-      process?.kill();
-      process = null;
-    }
-
-    try {
-      process = await Process.start('nmap', ['-sV', '-O', '-T4', widget.device.address],
-          runInShell: Platform.isWindows);
-
-      stdoutSub = process!.stdout
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen((line) {
-        if (line.trim().isNotEmpty) { lines.add(line.trim()); emit(line); }
-      }, onError: (e) { lines.add('[SYSTEM ERR] $e'); emit('ERROR'); });
-
-      stderrSub = process!.stderr
-          .transform(const Utf8Decoder(allowMalformed: true))
-          .transform(const LineSplitter())
-          .listen((line) {
-        if (line.trim().isNotEmpty) { lines.add('[SYSTEM ERR] $line'); emit(line); }
-      }, onError: (e) { lines.add('[SYSTEM ERR] $e'); emit('ERROR'); });
-
-      process!.exitCode.then((code) async {
-        lines.add('');
-        if (code == 0) {
-          lines.add('[SYSTEM] Scan completed successfully.');
-          widget.device.lastScanResult = lines.join('\n');
-        } else {
-          lines.add('[SYSTEM] Scan failed with exit code $code.');
-          lines.add('Note: OS detection (-O) usually requires root/sudo privileges.');
-        }
-        emit('DONE');
-        await closeStream();
-      });
-    } catch (e) {
-      lines.add('[ERROR] "nmap" utility not found. Please install nmap to use this feature.');
-      emit('ERROR');
-      await closeStream();
-    }
-    if (!mounted) return;
-
-    await showDialog(
+  void _showScanMenu() {
+    showScanInputDialog(
       context: context,
-      builder: (context) => StreamBuilder<String>(
-        stream: logStream.stream,
-        builder: (context, snapshot) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (scrollController.hasClients) {
-              scrollController.animateTo(scrollController.position.maxScrollExtent,
-                  duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
-            }
-          });
-
-          return AlertDialog(
-            title: Text('Deep Infrastructure Scan', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-            backgroundColor: const Color(0xFF0F172A),
-            content: Container(
-              width: 700, height: 500,
-              decoration: BoxDecoration(
-                color: Colors.black, borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-              ),
-              padding: const EdgeInsets.all(16),
-              child: ListView.builder(
-                controller: scrollController,
-                itemCount: lines.length,
-                itemBuilder: (context, i) => Text(lines[i],
-                    style: GoogleFonts.jetBrainsMono(
-                        color: lines[i].startsWith('[SYSTEM ERR]') ? Colors.redAccent : const Color(0xFF34D399),
-                        fontSize: 12, height: 1.4)),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () { killProcess(); Navigator.pop(context); },
-                child: Text('DISMISS', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-              ),
-            ],
-          );
-        },
-      ),
+      initialAddress: widget.device.address,
+      onStart: (address, type) async {
+        final result = await runScanDialog(
+          context: context,
+          address: address,
+          scanType: type,
+        );
+        if (!mounted) return;
+        if (result != null) {
+          widget.device.lastScanResult = result.join('\n');
+          setState(() {});
+        }
+      },
     );
-
-    killProcess();
-    await stdoutSub?.cancel();
-    await stderrSub?.cancel();
-    await closeStream();
-    scrollController.dispose();
   }
 
   Future<void> _runTraceroute() async {
@@ -201,6 +109,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     StreamSubscription<String>? stdoutSub;
     StreamSubscription<String>? stderrSub;
     bool isClosed = false;
+    bool isDone = false;
 
     void emit(String message) {
       if (!isClosed) logStream.add(message);
@@ -232,11 +141,13 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
       process!.exitCode.then((code) async {
         lines.add('');
         lines.add('[SYSTEM] Analysis complete with code $code.');
+        isDone = true;
         emit('DONE');
         await closeStream();
       });
     } catch (e) {
       lines.add('[ERROR] Diagnostic utility "$cmd" not found on system.');
+      isDone = true;
       emit('ERROR');
       await closeStream();
     }
@@ -244,9 +155,9 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
 
     await showDialog(
       context: context,
-      builder: (context) => StreamBuilder<String>(
+      builder: (dialogContext) => StreamBuilder<String>(
         stream: logStream.stream,
-        builder: (context, snapshot) {
+        builder: (ctx, snapshot) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (scrollController.hasClients) {
               scrollController.animateTo(scrollController.position.maxScrollExtent,
@@ -254,31 +165,45 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
             }
           });
 
-          return AlertDialog(
-            title: Text('Network Path Diagnostics', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-            backgroundColor: const Color(0xFF0F172A),
-            content: Container(
-              width: 700, height: 450,
-              decoration: BoxDecoration(
-                color: Colors.black, borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-              ),
-              padding: const EdgeInsets.all(16),
-              child: ListView.builder(
-                controller: scrollController,
-                itemCount: lines.length,
-                itemBuilder: (context, i) => Text(lines[i],
-                    style: GoogleFonts.jetBrainsMono(
-                        color: lines[i].startsWith('[SYSTEM ERR]') ? Colors.redAccent : const Color(0xFF10B981),
-                        fontSize: 12, height: 1.4)),
+          return CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.enter): () {
+                if (isDone) Navigator.pop(dialogContext);
+              },
+              const SingleActivator(LogicalKeyboardKey.escape): () {
+                killProcess();
+                Navigator.pop(dialogContext);
+              },
+            },
+            child: Focus(
+              autofocus: true,
+              child: AlertDialog(
+                title: Text('Network Path Diagnostics', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                backgroundColor: const Color(0xFF0F172A),
+                content: Container(
+                  width: 700, height: 450,
+                  decoration: BoxDecoration(
+                    color: Colors.black, borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                  ),
+                  padding: const EdgeInsets.all(16),
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemCount: lines.length,
+                    itemBuilder: (context, i) => Text(lines[i],
+                        style: GoogleFonts.jetBrainsMono(
+                            color: lines[i].startsWith('[SYSTEM ERR]') ? Colors.redAccent : const Color(0xFF10B981),
+                            fontSize: 12, height: 1.4)),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () { killProcess(); Navigator.pop(dialogContext); },
+                    child: Text('DISMISS', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                  ),
+                ],
               ),
             ),
-            actions: [
-              TextButton(
-                onPressed: () { killProcess(); Navigator.pop(context); },
-                child: Text('DISMISS', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-              ),
-            ],
           );
         },
       ),
@@ -308,7 +233,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
           ],
         ),
         actions: [
-          _buildHeaderAction('Scan Host', Icons.radar_outlined, _runDeepScan),
+          _buildHeaderAction('Scan Host', Icons.radar_outlined, _showScanMenu),
           _buildHeaderAction('Trace', Icons.analytics_outlined, _runTraceroute),
           _buildHeaderAction('Configure', Icons.edit_outlined, _editDevice),
           const SizedBox(width: 12),
@@ -586,7 +511,7 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                         : ((h.latencyMs ?? 0) > 200 ? const Color(0xFFF59E0B) : const Color(0xFF10B981));
                     return Expanded(
                       child: Tooltip(
-                        message: '${h.status.name.toUpperCase()} - ${h.latencyMs?.toStringAsFixed(1) ?? 0}ms',
+                        message: '${DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp)}\n${h.status.name.toUpperCase()} - ${h.latencyMs?.toStringAsFixed(1) ?? 0}ms',
                         child: Container(
                           margin: const EdgeInsets.symmetric(horizontal: 1),
                           decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
@@ -799,8 +724,16 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                   Icon(Icons.circle, size: 8, color: h.status == DeviceStatus.online ? Colors.green : Colors.red),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Text(h.status == DeviceStatus.online ? 'REPLY RECEIVED' : 'REQUEST TIMED OUT',
-                        style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(h.status == DeviceStatus.online ? 'REPLY RECEIVED' : 'REQUEST TIMED OUT',
+                            style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 2),
+                        Text(DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp),
+                            style: GoogleFonts.jetBrainsMono(fontSize: 9, color: Colors.grey)),
+                      ],
+                    ),
                   ),
                   Text(h.latencyMs != null ? '${h.latencyMs!.toStringAsFixed(1)}ms' : '0.0ms',
                       style: GoogleFonts.jetBrainsMono(fontSize: 11)),

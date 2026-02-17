@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:csv/csv.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -62,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isCheckingUpdate = false;
   bool _isApplyingUpdate = false;
   bool _updateChecked = false;
+  double _updateProgress = 0.0;
 
   @override
   void initState() {
@@ -123,8 +125,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _saveWebhookSettings() {
+    final url = _webhookUrlController.text.trim();
+    if (url.isNotEmpty) {
+      final parsed = Uri.tryParse(url);
+      if (parsed == null || !parsed.hasScheme || !parsed.hasAuthority) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid webhook URL. Please enter a valid URL starting with https://.')),
+        );
+        return;
+      }
+    }
     final settings = WebhookSettings(
-      url: _webhookUrlController.text,
+      url: url,
       type: _webhookType,
       enabled: _webhookEnabled,
     );
@@ -156,25 +168,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _applyUpdate() async {
     if (_updateInfo == null) return;
-    setState(() => _isApplyingUpdate = true);
-    final success = await UpdateService().downloadAndApply(_updateInfo!);
+    setState(() {
+      _isApplyingUpdate = true;
+      _updateProgress = 0.0;
+    });
+    final success = await UpdateService().downloadAndApply(
+      _updateInfo!,
+      onProgress: (progress) {
+        if (mounted) setState(() => _updateProgress = progress);
+      },
+    );
     if (!mounted) return;
     if (success) {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (context) => AlertDialog(
-          title: Text('Update Ready', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-          content: Text(
-            'The update has been downloaded and staged. The application will now restart to apply the update.',
-            style: GoogleFonts.inter(),
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => exit(0),
-              child: const Text('Restart Now'),
+        builder: (dialogContext) => CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.enter): () => exit(0),
+          },
+          child: Focus(
+            autofocus: true,
+            child: AlertDialog(
+              title: Text('Update Ready', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+              content: Text(
+                'The update has been downloaded and staged. The application will now restart to apply the update.',
+                style: GoogleFonts.inter(),
+              ),
+              actions: [
+                FilledButton(
+                  onPressed: () => exit(0),
+                  child: const Text('Restart Now'),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       );
     } else {
@@ -339,7 +367,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ? 'Update Available: v${_updateInfo!.version}'
                           : _updateChecked ? 'You\'re up to date' : 'Check for Updates'),
                       subtitle: _updateInfo != null
-                          ? Text(_updateInfo!.releaseNotes, maxLines: 3, overflow: TextOverflow.ellipsis)
+                          ? (_isApplyingUpdate
+                              ? Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const SizedBox(height: 8),
+                                    LinearProgressIndicator(value: _updateProgress, minHeight: 6, borderRadius: BorderRadius.circular(3)),
+                                    const SizedBox(height: 4),
+                                    Text('${(_updateProgress * 100).toStringAsFixed(0)}% downloaded',
+                                        style: GoogleFonts.jetBrainsMono(fontSize: 11, color: Colors.grey)),
+                                  ],
+                                )
+                              : Text(_updateInfo!.releaseNotes, maxLines: 3, overflow: TextOverflow.ellipsis))
                           : null,
                       trailing: _updateInfo != null
                           ? FilledButton(

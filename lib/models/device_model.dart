@@ -80,6 +80,9 @@ class Device {
     this.packetLoss,
     this.lastResponseCode,
     this.failureThreshold = 1,
+    this.latencyThreshold,
+    this.packetLossThreshold,
+    this.consecutiveFailures = 0,
     this.topologyX,
     this.topologyY,
     this.parentId,
@@ -98,9 +101,10 @@ class Device {
   int? port;
   bool isPaused;
   int failureThreshold;
+  double? latencyThreshold;
+  double? packetLossThreshold;
 
-  @JsonKey(includeFromJson: false, includeToJson: false)
-  int consecutiveFailures = 0;
+  int consecutiveFailures;
 
   @JsonKey(includeFromJson: false, includeToJson: false)
   DeviceStatus status;

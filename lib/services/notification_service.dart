@@ -7,24 +7,27 @@ class NotificationService {
     // No initialization needed for shell-based notifications
   }
 
-  /// Strips characters that could enable shell injection.
-  static String _sanitize(String s) {
-    return s.replaceAll(RegExp(r'''['"\\`\${}()\[\];&|<>!#%^]'''), '');
-  }
+  /// Strips characters that could enable shell injection (for macOS osascript).
+  static final RegExp _unsafeCharsRegex = RegExp(r'''['"\\`\${}()\[\];&|<>!#%^]''');
+  static String _sanitize(String s) => s.replaceAll(_unsafeCharsRegex, '');
+
+  /// Escapes single quotes for PowerShell single-quoted strings.
+  static String _escapePowerShell(String s) => s.replaceAll("'", "''");
 
   Future<void> showStatusChangeNotification(Device device, DeviceStatus oldStatus, DeviceStatus newStatus) async {
     if (oldStatus == DeviceStatus.unknown) return;
 
-    final title = _sanitize(
-      '${device.name} is ${newStatus == DeviceStatus.online ? "Online" : newStatus == DeviceStatus.degraded ? "Degraded" : "Offline"}',
-    );
-    final body = _sanitize(
-      newStatus == DeviceStatus.online
-          ? '${device.address} is back online. Latency: ${device.lastLatency?.toStringAsFixed(1)} ms'
-          : newStatus == DeviceStatus.degraded
-              ? '${device.address} is experiencing degraded performance.'
-              : '${device.address} has gone offline!',
-    );
+    final statusLabel = newStatus == DeviceStatus.online
+        ? 'Online'
+        : newStatus == DeviceStatus.degraded
+            ? 'Degraded'
+            : 'Offline';
+    final rawTitle = '${device.name} is $statusLabel';
+    final rawBody = newStatus == DeviceStatus.online
+        ? '${device.address} is back online. Latency: ${device.lastLatency?.toStringAsFixed(1)} ms'
+        : newStatus == DeviceStatus.degraded
+            ? '${device.address} is experiencing degraded performance.'
+            : '${device.address} has gone offline!';
 
     if (Platform.isLinux) {
       try {
@@ -32,14 +35,16 @@ class NotificationService {
         await Process.run('notify-send', [
           '-a', 'PingIT',
           '-i', newStatus == DeviceStatus.online ? 'network-transmit-receive' : 'network-error',
-          title,
-          body,
+          rawTitle,
+          rawBody,
         ]);
       } catch (e) {
         debugPrint('Notification failed (notify-send may not be installed): $e');
       }
     } else if (Platform.isWindows) {
       try {
+        final title = _escapePowerShell(rawTitle);
+        final body = _escapePowerShell(rawBody);
         await Process.start(
           'powershell',
           [
@@ -60,6 +65,8 @@ class NotificationService {
       }
     } else if (Platform.isMacOS) {
       try {
+        final title = _sanitize(rawTitle);
+        final body = _sanitize(rawBody);
         await Process.run('osascript', [
           '-e', 'display notification "$body" with title "$title"',
         ]);
@@ -67,7 +74,7 @@ class NotificationService {
         debugPrint('Notification failed: $e');
       }
     } else {
-      debugPrint('Notification: $title - $body');
+      debugPrint('Notification: $rawTitle - $rawBody');
     }
   }
 }
