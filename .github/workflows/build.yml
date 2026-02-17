@@ -23,20 +23,30 @@ jobs:
       - name: Build Windows release
         run: flutter build windows --release
 
-      - name: Package Windows build
+      - name: Package Windows zip
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath pingit-windows.zip
         shell: pwsh
 
-      - name: Upload Windows artifact
+      - name: Build Windows installer
+        run: |
+          choco install innosetup -y --no-progress
+          iscc windows\installer.iss
+        shell: pwsh
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pingit-windows
-          path: pingit-windows.zip
+          path: |
+            pingit-windows.zip
+            build/installer/*.exe
 
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: pingit-windows.zip
+          files: |
+            pingit-windows.zip
+            build/installer/*.exe
 
   build-linux:
     runs-on: ubuntu-latest
