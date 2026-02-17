@@ -25,6 +25,8 @@ class DeviceListScreen extends StatefulWidget {
     required this.onEditDevice,
     required this.onTapDevice,
     required this.onBulkDelete,
+    required this.onBulkPause,
+    required this.onBulkResume,
     required this.onBulkMoveToGroup,
     this.statusFilter,
     this.onStatusFilterChanged,
@@ -43,6 +45,8 @@ class DeviceListScreen extends StatefulWidget {
   final Function(Device) onEditDevice;
   final Function(Device) onTapDevice;
   final Function(Set<String>) onBulkDelete;
+  final Function(Set<String>) onBulkPause;
+  final Function(Set<String>) onBulkResume;
   final Function(Set<String>) onBulkMoveToGroup;
   final DeviceStatus? statusFilter;
   final Function(DeviceStatus?)? onStatusFilterChanged;
@@ -153,6 +157,26 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
               onPressed: _selectAll,
               icon: const Icon(Icons.select_all, size: 18),
               label: Text('All', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            ),
+            TextButton.icon(
+              onPressed: _selectedIds.isNotEmpty
+                  ? () {
+                      widget.onBulkPause(_selectedIds);
+                      setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+                    }
+                  : null,
+              icon: const Icon(Icons.pause, size: 18),
+              label: Text('Pause', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            ),
+            TextButton.icon(
+              onPressed: _selectedIds.isNotEmpty
+                  ? () {
+                      widget.onBulkResume(_selectedIds);
+                      setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+                    }
+                  : null,
+              icon: const Icon(Icons.play_arrow, size: 18),
+              label: Text('Resume', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
             ),
             TextButton.icon(
               onPressed: _selectedIds.isNotEmpty
@@ -447,7 +471,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           items: const [
             DropdownMenuItem(value: SortOption.status, child: Text('Status')),
             DropdownMenuItem(value: SortOption.health, child: Text('Health')),
-            DropdownMenuItem(value: SortOption.latency, child: Text('Jitter')),
+            DropdownMenuItem(value: SortOption.latency, child: Text('Latency')),
             DropdownMenuItem(value: SortOption.name, child: Text('Alpha')),
           ],
           onChanged: (val) => setState(() => _sortOption = val!),
@@ -829,7 +853,23 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(d.name, style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15, color: d.isPaused ? Theme.of(context).disabledColor : Theme.of(context).colorScheme.onSurface)),
+                    Row(
+                      children: [
+                        Flexible(child: Text(d.name, style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 15, color: d.isPaused ? Theme.of(context).disabledColor : Theme.of(context).colorScheme.onSurface), overflow: TextOverflow.ellipsis)),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            d.checkType.name.toUpperCase(),
+                            style: GoogleFonts.jetBrainsMono(fontSize: 9, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 4),
                     Text(d.address, style: GoogleFonts.jetBrainsMono(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   ],

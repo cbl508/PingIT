@@ -83,6 +83,8 @@ class Device {
     this.latencyThreshold,
     this.packetLossThreshold,
     this.consecutiveFailures = 0,
+    this.maxHistory = 2000,
+    this.maintenanceUntil,
     this.topologyX,
     this.topologyY,
     this.parentId,
@@ -105,6 +107,13 @@ class Device {
   double? packetLossThreshold;
 
   int consecutiveFailures;
+  int maxHistory;
+  DateTime? maintenanceUntil;
+
+  bool get isInMaintenance {
+    if (maintenanceUntil == null) return false;
+    return DateTime.now().isBefore(maintenanceUntil!);
+  }
 
   @JsonKey(includeFromJson: false, includeToJson: false)
   DeviceStatus status;

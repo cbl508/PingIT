@@ -17,17 +17,24 @@ class NotificationService {
   Future<void> showStatusChangeNotification(Device device, DeviceStatus oldStatus, DeviceStatus newStatus) async {
     if (oldStatus == DeviceStatus.unknown) return;
 
-    final statusLabel = newStatus == DeviceStatus.online
-        ? 'Online'
-        : newStatus == DeviceStatus.degraded
-            ? 'Degraded'
-            : 'Offline';
-    final rawTitle = '${device.name} is $statusLabel';
-    final rawBody = newStatus == DeviceStatus.online
-        ? '${device.address} is back online. Latency: ${device.lastLatency?.toStringAsFixed(1)} ms'
-        : newStatus == DeviceStatus.degraded
-            ? '${device.address} is experiencing degraded performance.'
-            : '${device.address} has gone offline!';
+    final isRecovery = oldStatus == DeviceStatus.offline && newStatus == DeviceStatus.online;
+    final statusLabel = isRecovery
+        ? 'RECOVERED'
+        : newStatus == DeviceStatus.online
+            ? 'Online'
+            : newStatus == DeviceStatus.degraded
+                ? 'Degraded'
+                : 'Offline';
+    final rawTitle = isRecovery
+        ? 'RECOVERED: ${device.name}'
+        : '${device.name} is $statusLabel';
+    final rawBody = isRecovery
+        ? '${device.address} is back online after outage. Latency: ${device.lastLatency?.toStringAsFixed(1)} ms'
+        : newStatus == DeviceStatus.online
+            ? '${device.address} is back online. Latency: ${device.lastLatency?.toStringAsFixed(1)} ms'
+            : newStatus == DeviceStatus.degraded
+                ? '${device.address} is experiencing degraded performance.'
+                : '${device.address} has gone offline!';
 
     if (Platform.isLinux) {
       try {

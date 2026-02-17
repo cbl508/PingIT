@@ -9,10 +9,23 @@ class PingService {
   static const int _pingCount = 3;
   static const double _latencyWarningThreshold = 500.0;
   static const double _packetLossWarningThreshold = 10.0;
-  static const int _maxHistory = 2000;
+
+  // Exponential backoff for repeated poll failures
+  int _consecutivePollFailures = 0;
+  static const int _maxBackoffSeconds = 300;
+
+  int get backoffSeconds {
+    if (_consecutivePollFailures <= 0) return 0;
+    final seconds = 1 << _consecutivePollFailures.clamp(0, 8);
+    return seconds.clamp(0, _maxBackoffSeconds);
+  }
+
+  void recordPollSuccess() => _consecutivePollFailures = 0;
+  void recordPollFailure() => _consecutivePollFailures++;
 
   Future<void> pingDevice(Device device, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
     if (device.isPaused) return;
+    if (device.isInMaintenance) return;
 
     final now = DateTime.now();
 
@@ -69,7 +82,7 @@ class PingService {
       responseCode: result.responseCode,
     ));
 
-    if (device.history.length > _maxHistory) {
+    while (device.history.length > device.maxHistory) {
       device.history.removeAt(0);
     }
 
@@ -283,11 +296,18 @@ class PingService {
     final now = DateTime.now();
     final due = devices.where((d) {
       if (d.isPaused) return false;
+      if (d.isInMaintenance) return false;
       if (d.lastPingTime == null) return true;
       return now.difference(d.lastPingTime!).inSeconds >= d.interval;
     }).toList();
 
     if (due.isEmpty) return;
-    await Future.wait(due.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+    try {
+      await Future.wait(due.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+      recordPollSuccess();
+    } catch (e) {
+      recordPollFailure();
+      rethrow;
+    }
   }
 }

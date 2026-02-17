@@ -1,7 +1,11 @@
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
+
+enum _FontSize { small, medium, large }
 
 class LogsScreen extends StatefulWidget {
   const LogsScreen({
@@ -21,14 +25,37 @@ class LogsScreen extends StatefulWidget {
 class _LogsScreenState extends State<LogsScreen> {
   int _filterIndex = 0; // 0=All, 1=Online, 2=Degraded, 3=Offline, 4=Paused
   String _searchQuery = '';
+  _FontSize _fontSize = _FontSize.medium;
 
-  @override
-  Widget build(BuildContext context) {
+  double get _nameFontSize {
+    switch (_fontSize) {
+      case _FontSize.small: return 13;
+      case _FontSize.medium: return 14;
+      case _FontSize.large: return 15;
+    }
+  }
+
+  double get _timestampFontSize {
+    switch (_fontSize) {
+      case _FontSize.small: return 10;
+      case _FontSize.medium: return 12;
+      case _FontSize.large: return 13;
+    }
+  }
+
+  double get _addressFontSize {
+    switch (_fontSize) {
+      case _FontSize.small: return 11;
+      case _FontSize.medium: return 13;
+      case _FontSize.large: return 14;
+    }
+  }
+
+  List<({Device device, StatusHistory log})> _getFilteredLogs() {
     var allLogs = widget.devices
         .expand((d) => d.history.map((h) => (device: d, log: h)))
         .toList();
 
-    // Apply status filter
     switch (_filterIndex) {
       case 1:
         allLogs = allLogs.where((item) => item.log.status == DeviceStatus.online).toList();
@@ -40,27 +67,67 @@ class _LogsScreenState extends State<LogsScreen> {
         allLogs = allLogs.where((item) => item.log.status == DeviceStatus.offline).toList();
         break;
       case 4:
-        // Paused devices — show all history from devices currently paused
         final pausedIds = widget.devices.where((d) => d.isPaused).map((d) => d.id).toSet();
         allLogs = allLogs.where((item) => pausedIds.contains(item.device.id)).toList();
         break;
     }
 
     if (_searchQuery.isNotEmpty) {
-      allLogs = allLogs
-          .where(
-            (item) =>
-                item.device.name.toLowerCase().contains(
-                  _searchQuery.toLowerCase(),
-                ) ||
-                item.device.address.toLowerCase().contains(
-                  _searchQuery.toLowerCase(),
-                ),
-          )
-          .toList();
+      final q = _searchQuery.toLowerCase();
+      allLogs = allLogs.where((item) =>
+          item.device.name.toLowerCase().contains(q) ||
+          item.device.address.toLowerCase().contains(q)).toList();
     }
 
     allLogs.sort((a, b) => b.log.timestamp.compareTo(a.log.timestamp));
+    return allLogs;
+  }
+
+  Future<void> _exportCsv() async {
+    final logs = _getFilteredLogs();
+    if (logs.isEmpty) return;
+
+    final buffer = StringBuffer();
+    buffer.writeln('Device,Address,Timestamp,Status,Latency (ms),Packet Loss (%),Response Code');
+    for (final item in logs) {
+      final ts = DateFormat('yyyy-MM-dd HH:mm:ss').format(item.log.timestamp);
+      final latency = item.log.latencyMs?.toStringAsFixed(1) ?? '';
+      final loss = item.log.packetLoss?.toStringAsFixed(1) ?? '';
+      final code = item.log.responseCode?.toString() ?? '';
+      // Escape commas in device name
+      final name = item.device.name.contains(',') ? '"${item.device.name}"' : item.device.name;
+      buffer.writeln('$name,${item.device.address},$ts,${item.log.status.name},$latency,$loss,$code');
+    }
+
+    try {
+      final result = await FilePicker.platform.saveFile(
+        dialogTitle: 'Export Event Logs',
+        fileName: 'pingit_logs_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.csv',
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+      );
+      if (result != null) {
+        await File(result).writeAsString(buffer.toString());
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Exported ${logs.length} events to CSV')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Export failed: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final allLogs = _getFilteredLogs();
+    final surfaceColor = Theme.of(context).colorScheme.onSurface;
+    final subtleColor = Theme.of(context).colorScheme.onSurfaceVariant;
 
     // Counts for filter badges
     final totalCount = widget.devices.expand((d) => d.history).length;
@@ -75,15 +142,33 @@ class _LogsScreenState extends State<LogsScreen> {
           'Event Stream',
           style: GoogleFonts.inter(fontWeight: FontWeight.bold),
         ),
+        actions: [
+          SegmentedButton<_FontSize>(
+            segments: const [
+              ButtonSegment(value: _FontSize.small, label: Text('S')),
+              ButtonSegment(value: _FontSize.medium, label: Text('M')),
+              ButtonSegment(value: _FontSize.large, label: Text('L')),
+            ],
+            selected: {_fontSize},
+            onSelectionChanged: (v) => setState(() => _fontSize = v.first),
+            style: SegmentedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+          const SizedBox(width: 12),
+          IconButton(
+            icon: const Icon(Icons.download_outlined),
+            tooltip: 'Export CSV',
+            onPressed: _exportCsv,
+          ),
+          const SizedBox(width: 8),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(140),
           child: Column(
             children: [
               Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: TextField(
                   decoration: InputDecoration(
                     hintText: 'Search logs by node name or address...',
@@ -152,9 +237,7 @@ class _LogsScreenState extends State<LogsScreen> {
                   decoration: BoxDecoration(
                     color: Theme.of(context).cardColor,
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: statusColor.withValues(alpha: 0.1),
-                    ),
+                    border: Border.all(color: statusColor.withValues(alpha: 0.1)),
                   ),
                   child: ListTile(
                     dense: true,
@@ -165,45 +248,35 @@ class _LogsScreenState extends State<LogsScreen> {
                         color: statusColor.withValues(alpha: 0.1),
                         shape: BoxShape.circle,
                       ),
-                      child: Icon(
-                        _statusIcon(item.log.status),
-                        color: statusColor,
-                        size: 18,
-                      ),
+                      child: Icon(_statusIcon(item.log.status), color: statusColor, size: 18),
                     ),
                     title: Row(
                       children: [
-                        Text(
-                          item.device.name,
-                          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+                        Flexible(
+                          child: Text(
+                            item.device.name,
+                            style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: _nameFontSize, color: surfaceColor),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        const Spacer(),
+                        const SizedBox(width: 8),
                         Text(
                           DateFormat('HH:mm:ss \u2022 MMM dd').format(item.log.timestamp),
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 10,
-                            color: Colors.grey,
-                          ),
+                          style: GoogleFonts.jetBrainsMono(fontSize: _timestampFontSize, color: subtleColor),
                         ),
                       ],
                     ),
                     subtitle: Row(
                       children: [
-                        Icon(item.device.typeIcon, size: 12, color: Colors.grey),
+                        Icon(item.device.typeIcon, size: 12, color: subtleColor),
                         const SizedBox(width: 4),
                         Text(
                           item.device.address,
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 11,
-                            color: Colors.grey,
-                          ),
+                          style: GoogleFonts.jetBrainsMono(fontSize: _addressFontSize, color: subtleColor),
                         ),
                         const Spacer(),
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: statusColor.withValues(alpha: 0.05),
                             borderRadius: BorderRadius.circular(4),
@@ -211,7 +284,7 @@ class _LogsScreenState extends State<LogsScreen> {
                           child: Text(
                             _statusLabel(item.log),
                             style: GoogleFonts.jetBrainsMono(
-                              fontSize: 11,
+                              fontSize: _addressFontSize,
                               fontWeight: FontWeight.bold,
                               color: statusColor,
                             ),
@@ -220,11 +293,9 @@ class _LogsScreenState extends State<LogsScreen> {
                       ],
                     ),
                     trailing: PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert, size: 18, color: Colors.grey),
+                      icon: Icon(Icons.more_vert, size: 18, color: subtleColor),
                       onSelected: (val) {
-                        if (val == 'navigate') {
-                          widget.onTapDevice(item.device);
-                        }
+                        if (val == 'navigate') widget.onTapDevice(item.device);
                       },
                       itemBuilder: (context) => [
                         const PopupMenuItem(
@@ -268,40 +339,28 @@ class _LogsScreenState extends State<LogsScreen> {
 
   Color _statusColor(DeviceStatus status) {
     switch (status) {
-      case DeviceStatus.online:
-        return Colors.green;
-      case DeviceStatus.degraded:
-        return Colors.orange;
-      case DeviceStatus.offline:
-        return Colors.red;
-      default:
-        return Colors.blueGrey;
+      case DeviceStatus.online: return Colors.green;
+      case DeviceStatus.degraded: return Colors.orange;
+      case DeviceStatus.offline: return Colors.red;
+      default: return Colors.blueGrey;
     }
   }
 
   IconData _statusIcon(DeviceStatus status) {
     switch (status) {
-      case DeviceStatus.online:
-        return Icons.check_circle_outline;
-      case DeviceStatus.degraded:
-        return Icons.warning_amber_rounded;
-      case DeviceStatus.offline:
-        return Icons.error_outline;
-      default:
-        return Icons.pause_circle_outline;
+      case DeviceStatus.online: return Icons.check_circle_outline;
+      case DeviceStatus.degraded: return Icons.warning_amber_rounded;
+      case DeviceStatus.offline: return Icons.error_outline;
+      default: return Icons.pause_circle_outline;
     }
   }
 
   String _statusLabel(StatusHistory log) {
     switch (log.status) {
-      case DeviceStatus.online:
-        return '${log.latencyMs?.toStringAsFixed(1)}ms';
-      case DeviceStatus.degraded:
-        return '${log.latencyMs?.toStringAsFixed(1)}ms';
-      case DeviceStatus.offline:
-        return 'DROPPED';
-      default:
-        return 'PAUSED';
+      case DeviceStatus.online: return '${log.latencyMs?.toStringAsFixed(1)}ms';
+      case DeviceStatus.degraded: return '${log.latencyMs?.toStringAsFixed(1)}ms';
+      case DeviceStatus.offline: return 'DROPPED';
+      default: return 'PAUSED';
     }
   }
 }

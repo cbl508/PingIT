@@ -57,9 +57,10 @@ class StorageService {
   }
 
   Future<void> saveDevices(List<Device> devices) async {
+    // Snapshot JSON synchronously before any async gap to avoid race conditions
+    final snapshot = jsonEncode(devices.map((e) => e.toJson()).toList());
     final file = await _devicesFile;
-    final List<Map<String, dynamic>> json = devices.map((e) => e.toJson()).toList();
-    await file.writeAsString(jsonEncode(json));
+    await file.writeAsString(snapshot);
   }
 
   // Groups
@@ -77,9 +78,10 @@ class StorageService {
   }
 
   Future<void> saveGroups(List<DeviceGroup> groups) async {
+    // Snapshot JSON synchronously before any async gap to avoid race conditions
+    final snapshot = jsonEncode(groups.map((e) => e.toJson()).toList());
     final file = await _groupsFile;
-    final List<Map<String, dynamic>> json = groups.map((e) => e.toJson()).toList();
-    await file.writeAsString(jsonEncode(json));
+    await file.writeAsString(snapshot);
   }
 
   // Email Settings
