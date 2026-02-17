@@ -121,12 +121,21 @@ flutter build windows --release
 
 ### Download Pre-built Release
 
-Download the latest release from the [Releases page](https://github.com/cbl508/PingIT/releases). Extract and run:
+Download the latest release from the [Releases page](https://github.com/cbl508/PingIT/releases):
+
+| File | Platform | Description |
+|------|----------|-------------|
+| `pingit-1.2.0-setup.exe` | Windows | Installer with Start Menu/Desktop shortcuts and optional Nmap download prompt |
+| `pingit-windows-portable.zip` | Windows | Portable — extract and run, no installation needed |
+| `pingit-linux.tar.gz` | Linux | Extract and run `./pingit` |
 
 ```bash
 # Linux
-tar -xzf pingit-v1.2.0-linux-x64.tar.gz
-./bundle/pingit
+tar -xzf pingit-linux.tar.gz
+./pingit
+
+# Windows (portable)
+# Extract pingit-windows-portable.zip and run pingit.exe
 ```
 
 ## Project Structure
