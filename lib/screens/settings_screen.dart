@@ -172,38 +172,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _isApplyingUpdate = true;
       _updateProgress = 0.0;
     });
-    final success = await UpdateService().downloadAndApply(
+    final staged = await UpdateService().downloadAndStage(
       _updateInfo!,
       onProgress: (progress) {
         if (mounted) setState(() => _updateProgress = progress);
       },
     );
     if (!mounted) return;
-    if (success) {
+    if (staged != null) {
+      setState(() => _isApplyingUpdate = false);
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (dialogContext) => CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.enter): () => exit(0),
-          },
-          child: Focus(
-            autofocus: true,
-            child: AlertDialog(
-              title: Text('Update Ready', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-              content: Text(
-                'The update has been downloaded and staged. The application will now restart to apply the update.',
-                style: GoogleFonts.inter(),
-              ),
-              actions: [
-                FilledButton(
-                  onPressed: () => exit(0),
-                  child: const Text('Restart Now'),
+        builder: (dialogContext) {
+          final isDark = Theme.of(dialogContext).brightness == Brightness.dark;
+          return CallbackShortcuts(
+            bindings: {
+              const SingleActivator(LogicalKeyboardKey.enter): () =>
+                  UpdateService().launchUpdaterAndExit(staged),
+            },
+            child: Focus(
+              autofocus: true,
+              child: AlertDialog(
+                title: Text('Update Ready', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+                content: Text(
+                  'v${_updateInfo!.version} has been downloaded. Restart to apply the update.',
+                  style: GoogleFonts.inter(),
                 ),
-              ],
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: Text('Later',
+                        style: TextStyle(color: isDark ? Colors.grey.shade400 : Colors.grey.shade700)),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () => UpdateService().launchUpdaterAndExit(staged),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF10B981),
+                      foregroundColor: Colors.white,
+                    ),
+                    child: const Text('Restart Now'),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
+          );
+        },
       );
     } else {
       setState(() => _isApplyingUpdate = false);

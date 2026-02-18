@@ -52,9 +52,9 @@ class UpdateService {
     return null;
   }
 
-  /// Download and stage the update with optional progress callback.
-  /// Returns true if the updater script was launched successfully.
-  Future<bool> downloadAndApply(
+  /// Download and extract the update to a staging directory.
+  /// Does NOT launch the updater — call [launchUpdaterAndExit] when ready.
+  Future<StagedUpdate?> downloadAndStage(
     UpdateInfo info, {
     void Function(double progress)? onProgress,
   }) async {
@@ -69,7 +69,7 @@ class UpdateService {
       try {
         final request = http.Request('GET', Uri.parse(info.downloadUrl));
         final response = await client.send(request).timeout(const Duration(seconds: 120));
-        if (response.statusCode != 200) return false;
+        if (response.statusCode != 200) return null;
 
         final contentLength = response.contentLength ?? 0;
         final bytes = <int>[];
@@ -113,40 +113,40 @@ class UpdateService {
         }
       }
 
-      // Write and launch a platform-specific updater script that runs after
-      // this process exits.
       final appDir = File(Platform.resolvedExecutable).parent.path;
-
-      if (Platform.isWindows) {
-        await _launchWindowsUpdater(updateDir.path, extractDir.path, appDir);
-      } else {
-        await _launchUnixUpdater(updateDir.path, extractDir.path, appDir);
-      }
-
-      return true;
+      return StagedUpdate(updateDir.path, extractDir.path, appDir);
     } catch (e) {
-      debugPrint('Update failed: $e');
-      return false;
+      debugPrint('Update staging failed: $e');
+      return null;
     }
   }
 
-  Future<void> _launchWindowsUpdater(String updateDir, String extractDir, String appDir) async {
-    final ePath = extractDir.replaceAll('/', '\\');
-    final aPath = appDir.replaceAll('/', '\\');
+  /// Launch the platform updater script and immediately exit the app.
+  /// The script waits for this process to exit, copies files, and restarts.
+  Future<void> launchUpdaterAndExit(StagedUpdate staged) async {
+    if (Platform.isWindows) {
+      await _launchWindowsUpdater(staged);
+    } else {
+      await _launchUnixUpdater(staged);
+    }
+    exit(0);
+  }
+
+  Future<void> _launchWindowsUpdater(StagedUpdate staged) async {
+    final ePath = staged.extractDir.replaceAll('/', '\\');
+    final aPath = staged.appDir.replaceAll('/', '\\');
     final currentPid = pid;
 
     // PowerShell script: waits for PID to exit, copies files, retries
     // elevated if access denied, then restarts the app.
     final script = '''
 \$ErrorActionPreference = 'SilentlyContinue'
-# Wait for the running app to exit (up to 60s)
 try { Wait-Process -Id $currentPid -Timeout 60 } catch {}
 Start-Sleep -Seconds 2
 
 \$src = "$ePath\\*"
 \$dst = "$aPath\\"
 
-# Attempt copy — retry up to 5 times for lingering file locks
 \$ok = \$false
 for (\$i = 0; \$i -lt 5; \$i++) {
     try {
@@ -159,9 +159,8 @@ for (\$i = 0; \$i -lt 5; \$i++) {
 }
 
 if (-not \$ok) {
-    # Retry with elevation (UAC prompt)
     Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList @(
-        '-Command',
+        '-NoProfile', '-Command',
         "Copy-Item -Path '\$src' -Destination '\$dst' -Recurse -Force; Start-Process '$aPath\\pingit.exe'"
     )
     Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
@@ -173,27 +172,29 @@ Start-Sleep -Seconds 1
 Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
 ''';
 
-    final ps1File = File('$updateDir\\update.ps1');
+    final ps1File = File('${staged.updateDir}\\update.ps1');
     await ps1File.writeAsString(script);
-    await Process.start(
-      'powershell',
-      ['-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1File.path],
-      mode: ProcessStartMode.detached,
-    );
+
+    // Use a VBS wrapper to launch PowerShell completely hidden (no console flash)
+    final vbsScript =
+        'CreateObject("WScript.Shell").Run "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${ps1File.path}""", 0, False\r\n';
+    final vbsFile = File('${staged.updateDir}\\launch_update.vbs');
+    await vbsFile.writeAsString(vbsScript);
+    await Process.start('wscript', [vbsFile.path], mode: ProcessStartMode.detached);
   }
 
-  Future<void> _launchUnixUpdater(String updateDir, String extractDir, String appDir) async {
+  Future<void> _launchUnixUpdater(StagedUpdate staged) async {
     final currentPid = pid;
+    final extractDir = staged.extractDir;
+    final appDir = staged.appDir;
 
     final script = '#!/bin/bash\n'
-        '# Wait for the running app to actually exit (up to 60s)\n'
         'for i in \$(seq 1 60); do\n'
         '  kill -0 $currentPid 2>/dev/null || break\n'
         '  sleep 1\n'
         'done\n'
         'sleep 1\n'
         '\n'
-        '# Try normal copy, fall back to pkexec for system installs\n'
         'if cp -rf "$extractDir/"* "$appDir/" 2>/dev/null; then\n'
         '  chmod +x "$appDir/pingit"\n'
         'else\n'
@@ -203,7 +204,7 @@ Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
         '"$appDir/pingit" &\n'
         'rm -- "\$0"\n';
 
-    final shFile = File('$updateDir/update.sh');
+    final shFile = File('${staged.updateDir}/update.sh');
     await shFile.writeAsString(script);
     await Process.run('chmod', ['+x', shFile.path]);
     await Process.start('bash', [shFile.path], mode: ProcessStartMode.detached);
@@ -230,4 +231,12 @@ class UpdateInfo {
     required this.downloadUrl,
     required this.releaseNotes,
   });
+}
+
+class StagedUpdate {
+  final String updateDir;
+  final String extractDir;
+  final String appDir;
+
+  StagedUpdate(this.updateDir, this.extractDir, this.appDir);
 }
