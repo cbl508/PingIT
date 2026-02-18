@@ -236,13 +236,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 labelType: NavigationRailLabelType.selected,
                 destinations: const [
                   NavigationRailDestination(
-                    icon: Icon(Icons.dashboard_outlined),
-                    selectedIcon: Icon(Icons.dashboard),
+                    icon: Icon(Icons.assessment_outlined),
+                    selectedIcon: Icon(Icons.assessment),
                     label: Text('Dashboard'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.grid_view_outlined),
-                    selectedIcon: Icon(Icons.grid_view),
+                    icon: Icon(Icons.dns_outlined),
+                    selectedIcon: Icon(Icons.dns),
                     label: Text('Infrastructure'),
                   ),
                   NavigationRailDestination(
@@ -251,8 +251,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     label: Text('Topology'),
                   ),
                   NavigationRailDestination(
-                    icon: Icon(Icons.terminal_outlined),
-                    selectedIcon: Icon(Icons.terminal),
+                    icon: Icon(Icons.receipt_long_outlined),
+                    selectedIcon: Icon(Icons.receipt_long),
                     label: Text('Logs'),
                   ),
                   NavigationRailDestination(
