@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 class UpdateService {
   static const String githubOwner = 'cbl508';
   static const String githubRepo = 'PingIT';
-  static const String currentVersion = '1.2.0';
+  static const String currentVersion = '1.3.0';
 
   /// Check GitHub Releases API for a newer version.
   Future<UpdateInfo?> checkForUpdate() async {
@@ -133,23 +133,73 @@ class UpdateService {
   Future<void> _launchWindowsUpdater(String updateDir, String extractDir, String appDir) async {
     final ePath = extractDir.replaceAll('/', '\\');
     final aPath = appDir.replaceAll('/', '\\');
+    final currentPid = pid;
 
-    final script = '@echo off\r\n'
-        'timeout /t 3 /nobreak >nul\r\n'
-        'xcopy /s /y /q "$ePath\\*" "$aPath\\"\r\n'
-        'start "" "$aPath\\pingit.exe"\r\n'
-        'del "%~f0"\r\n';
+    // PowerShell script: waits for PID to exit, copies files, retries
+    // elevated if access denied, then restarts the app.
+    final script = '''
+\$ErrorActionPreference = 'SilentlyContinue'
+# Wait for the running app to exit (up to 60s)
+try { Wait-Process -Id $currentPid -Timeout 60 } catch {}
+Start-Sleep -Seconds 2
 
-    final batFile = File('$updateDir\\update.bat');
-    await batFile.writeAsString(script);
-    await Process.start('cmd', ['/c', batFile.path], mode: ProcessStartMode.detached);
+\$src = "$ePath\\*"
+\$dst = "$aPath\\"
+
+# Attempt copy — retry up to 5 times for lingering file locks
+\$ok = \$false
+for (\$i = 0; \$i -lt 5; \$i++) {
+    try {
+        Copy-Item -Path \$src -Destination \$dst -Recurse -Force -ErrorAction Stop
+        \$ok = \$true
+        break
+    } catch {
+        Start-Sleep -Seconds 2
+    }
+}
+
+if (-not \$ok) {
+    # Retry with elevation (UAC prompt)
+    Start-Process powershell -Verb RunAs -WindowStyle Hidden -Wait -ArgumentList @(
+        '-Command',
+        "Copy-Item -Path '\$src' -Destination '\$dst' -Recurse -Force; Start-Process '$aPath\\pingit.exe'"
+    )
+    Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
+    exit
+}
+
+Start-Process "$aPath\\pingit.exe"
+Start-Sleep -Seconds 1
+Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
+''';
+
+    final ps1File = File('$updateDir\\update.ps1');
+    await ps1File.writeAsString(script);
+    await Process.start(
+      'powershell',
+      ['-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1File.path],
+      mode: ProcessStartMode.detached,
+    );
   }
 
   Future<void> _launchUnixUpdater(String updateDir, String extractDir, String appDir) async {
+    final currentPid = pid;
+
     final script = '#!/bin/bash\n'
-        'sleep 3\n'
-        'cp -rf "$extractDir/"* "$appDir/"\n'
-        'chmod +x "$appDir/pingit"\n'
+        '# Wait for the running app to actually exit (up to 60s)\n'
+        'for i in \$(seq 1 60); do\n'
+        '  kill -0 $currentPid 2>/dev/null || break\n'
+        '  sleep 1\n'
+        'done\n'
+        'sleep 1\n'
+        '\n'
+        '# Try normal copy, fall back to pkexec for system installs\n'
+        'if cp -rf "$extractDir/"* "$appDir/" 2>/dev/null; then\n'
+        '  chmod +x "$appDir/pingit"\n'
+        'else\n'
+        '  pkexec bash -c \'cp -rf "$extractDir/"* "$appDir/" && chmod +x "$appDir/pingit"\'\n'
+        'fi\n'
+        '\n'
         '"$appDir/pingit" &\n'
         'rm -- "\$0"\n';
 
