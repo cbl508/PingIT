@@ -2,7 +2,7 @@
 ; Generates a setup.exe installer for Windows
 
 #define MyAppName "PingIT"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.4.0"
 #define MyAppPublisher "PingIT"
 #define MyAppURL "https://github.com/cbl508/PingIT"
 #define MyAppExeName "pingit.exe"
