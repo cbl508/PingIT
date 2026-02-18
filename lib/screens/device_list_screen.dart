@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/providers/device_provider.dart';
 import 'package:pingit/widgets/scan_dialog.dart';
 
 enum SortOption { name, status, latency, health }
@@ -15,8 +18,6 @@ class DeviceListScreen extends StatefulWidget {
     required this.devices,
     required this.groups,
     required this.isLoading,
-    required this.onUpdate,
-    required this.onGroupUpdate,
     required this.onAddDevice,
     required this.onQuickScan,
     required this.onAddGroup,
@@ -24,19 +25,15 @@ class DeviceListScreen extends StatefulWidget {
     required this.onDeleteGroup,
     required this.onEditDevice,
     required this.onTapDevice,
-    required this.onBulkDelete,
-    required this.onBulkPause,
-    required this.onBulkResume,
-    required this.onBulkMoveToGroup,
     this.statusFilter,
     this.onStatusFilterChanged,
   });
 
+  // These should ideally also be removed and accessed via provider,
+  // but for now we keep the callbacks that trigger navigation
   final List<Device> devices;
   final List<DeviceGroup> groups;
   final bool isLoading;
-  final VoidCallback onUpdate;
-  final VoidCallback onGroupUpdate;
   final VoidCallback onAddDevice;
   final Function(String) onQuickScan;
   final VoidCallback onAddGroup;
@@ -44,10 +41,6 @@ class DeviceListScreen extends StatefulWidget {
   final Function(DeviceGroup) onDeleteGroup;
   final Function(Device) onEditDevice;
   final Function(Device) onTapDevice;
-  final Function(Set<String>) onBulkDelete;
-  final Function(Set<String>) onBulkPause;
-  final Function(Set<String>) onBulkResume;
-  final Function(Set<String>) onBulkMoveToGroup;
   final DeviceStatus? statusFilter;
   final Function(DeviceStatus?)? onStatusFilterChanged;
 
@@ -137,6 +130,84 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     });
   }
 
+  void _handleBulkPause(BuildContext context) {
+    context.read<DeviceProvider>().bulkPauseDevices(_selectedIds);
+    setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+  }
+
+  void _handleBulkResume(BuildContext context) {
+    context.read<DeviceProvider>().bulkResumeDevices(_selectedIds);
+    setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+  }
+  
+  void _handleBulkDelete(BuildContext context) {
+     final provider = context.read<DeviceProvider>();
+     showDialog(
+      context: context,
+      builder: (dialogContext) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): () {
+            provider.bulkRemoveDevices(_selectedIds);
+            setState(() {
+               _isMultiSelect = false;
+               _selectedIds.clear();
+            });
+            Navigator.pop(dialogContext);
+          },
+        },
+        child: Focus(
+          autofocus: true,
+          child: AlertDialog(
+            title: Text('Delete ${_selectedIds.length} devices?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            content: Text('This action cannot be undone.', style: GoogleFonts.inter()),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              TextButton(
+                onPressed: () {
+                  provider.bulkRemoveDevices(_selectedIds);
+                  setState(() {
+                    _isMultiSelect = false;
+                    _selectedIds.clear();
+                  });
+                  Navigator.pop(dialogContext);
+                },
+                child: const Text('Delete', style: TextStyle(color: Colors.red)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  void _handleBulkMove(BuildContext context) {
+    final provider = context.read<DeviceProvider>();
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: Text('Move to Group', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        children: [
+          SimpleDialogOption(
+            onPressed: () {
+              provider.bulkMoveDevicesToGroup(_selectedIds, null);
+              setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+              Navigator.pop(context);
+            },
+            child: const Text('Unassigned'),
+          ),
+          ...provider.groups.map((g) => SimpleDialogOption(
+            onPressed: () {
+              provider.bulkMoveDevicesToGroup(_selectedIds, g.id);
+              setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+              Navigator.pop(context);
+            },
+            child: Text(g.name),
+          )),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -160,40 +231,28 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             ),
             TextButton.icon(
               onPressed: _selectedIds.isNotEmpty
-                  ? () {
-                      widget.onBulkPause(_selectedIds);
-                      setState(() { _isMultiSelect = false; _selectedIds.clear(); });
-                    }
+                  ? () => _handleBulkPause(context)
                   : null,
               icon: const Icon(Icons.pause, size: 18),
               label: Text('Pause', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
             ),
             TextButton.icon(
               onPressed: _selectedIds.isNotEmpty
-                  ? () {
-                      widget.onBulkResume(_selectedIds);
-                      setState(() { _isMultiSelect = false; _selectedIds.clear(); });
-                    }
+                  ? () => _handleBulkResume(context)
                   : null,
               icon: const Icon(Icons.play_arrow, size: 18),
               label: Text('Resume', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
             ),
             TextButton.icon(
               onPressed: _selectedIds.isNotEmpty
-                  ? () => widget.onBulkMoveToGroup(_selectedIds)
+                  ? () => _handleBulkMove(context)
                   : null,
               icon: const Icon(Icons.drive_file_move_outline, size: 18),
               label: Text('Move', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
             ),
             TextButton.icon(
               onPressed: _selectedIds.isNotEmpty
-                  ? () {
-                      widget.onBulkDelete(_selectedIds);
-                      setState(() {
-                        _isMultiSelect = false;
-                        _selectedIds.clear();
-                      });
-                    }
+                  ? () => _handleBulkDelete(context)
                   : null,
               icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
               label: Text('Delete', style: GoogleFonts.inter(fontWeight: FontWeight.bold, color: Colors.red)),
@@ -714,6 +773,8 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   }
 
   Widget _buildGroup(BuildContext context, DeviceGroup? group) {
+    // Need to trigger saveAll when group expansion changes
+    final provider = context.read<DeviceProvider>();
     final groupDevices = _getFilteredDevices(group?.id);
     if (groupDevices.isEmpty && _searchQuery.isNotEmpty) return const SizedBox.shrink();
     if (groupDevices.isEmpty && widget.statusFilter != null) return const SizedBox.shrink();
@@ -735,7 +796,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                   onExpansionChanged: (val) {
                     if (group != null) {
                       group.isExpanded = val;
-                      widget.onGroupUpdate();
+                      provider.saveAll(); // Save state
                     }
                   },
                   tilePadding: const EdgeInsets.symmetric(horizontal: 12),

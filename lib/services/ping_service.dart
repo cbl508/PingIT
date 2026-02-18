@@ -374,4 +374,9 @@ class PingService {
       rethrow;
     }
   }
+
+  /// Performs a single check for a device without affecting history or alerts.
+  Future<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})> performSingleCheck(Device device) async {
+    return _performCheck(device);
+  }
 }

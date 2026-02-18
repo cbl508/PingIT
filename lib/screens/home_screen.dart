@@ -1,24 +1,16 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/providers/device_provider.dart';
 import 'package:pingit/screens/add_device_screen.dart';
 import 'package:pingit/screens/device_details_screen.dart';
 import 'package:pingit/screens/device_list_screen.dart';
 import 'package:pingit/screens/topology_screen.dart';
 import 'package:pingit/screens/logs_screen.dart';
 import 'package:pingit/screens/settings_screen.dart';
-import 'package:pingit/services/ping_service.dart';
-import 'package:pingit/services/storage_service.dart';
-import 'package:pingit/services/alert_service.dart';
-import 'package:pingit/services/notification_service.dart';
-import 'package:pingit/services/email_service.dart';
-import 'package:pingit/services/webhook_service.dart';
-import 'package:pingit/services/update_service.dart';
-import 'package:pingit/services/logging_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,268 +21,93 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _selectedIndex = 0;
-  final PingService _pingService = PingService();
-  final StorageService _storageService = StorageService();
-  final AlertService _alertService = AlertService();
-  final NotificationService _notificationService = NotificationService();
-  final EmailService _emailService = EmailService();
-  final WebhookService _webhookService = WebhookService();
-  final LoggingService _log = LoggingService();
-
-  List<Device> _devices = [];
-  List<DeviceGroup> _groups = [];
-  bool _isLoading = true;
-  Timer? _timer;
-  Timer? _saveDebounceTimer;
-  bool _isPolling = false;
-  bool _isSaving = false;
-  bool _pendingSave = false;
-  QuietHoursSettings _quietHours = QuietHoursSettings();
-
-  // Update banner state
-  UpdateInfo? _startupUpdateInfo;
-
+  
   // Status filter from HUD click
   DeviceStatus? _hudStatusFilter;
-
-  // Backoff tracking
-  DateTime? _lastPollAttempt;
-
-  /// Clears parentId references that point to deleted devices.
-  void _cleanOrphanedParents() {
-    final ids = _devices.map((d) => d.id).toSet();
-    for (final d in _devices) {
-      if (d.parentId != null && !ids.contains(d.parentId)) {
-        d.parentId = null;
-      }
-    }
-  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadInitialData();
-    _startPolling();
   }
 
   @override
   void dispose() {
-    unawaited(_flushPendingSaves());
-    _stopPolling();
-    _saveDebounceTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final provider = context.read<DeviceProvider>();
     if (state == AppLifecycleState.resumed) {
-      _startPolling();
-      unawaited(_updateDeviceStatuses());
-      return;
-    }
-
-    if (state == AppLifecycleState.inactive ||
+      provider.startPolling();
+    } else if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      _stopPolling();
-      unawaited(_flushPendingSaves());
+      provider.stopPolling();
+      provider.saveAll(immediate: true);
     }
   }
 
-  void _startPolling() {
-    if (_timer != null) return;
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      unawaited(_updateDeviceStatuses());
-    });
-  }
+  void _navigateToAddDeviceScreen(BuildContext context, {Device? existingDevice}) async {
+    final provider = context.read<DeviceProvider>();
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AddDeviceScreen(
+          device: existingDevice,
+          groups: provider.groups,
+          existingDevices: provider.devices,
+        ),
+      ),
+    );
 
-  void _stopPolling() {
-    _timer?.cancel();
-    _timer = null;
-  }
-
-  Future<void> _loadInitialData() async {
-    final devices = await _storageService.loadDevices();
-    final groups = await _storageService.loadGroups();
-    final emailSettings = await _storageService.loadEmailSettings();
-    final webhookSettings = await _storageService.loadWebhookSettings();
-    final quietHours = await _storageService.loadQuietHours();
-    _emailService.updateSettings(emailSettings);
-    _webhookService.updateSettings(webhookSettings);
-
-    // Restore runtime state from persisted history & clear expired maintenance
-    for (var device in devices) {
-      if (device.history.isNotEmpty) {
-        final last = device.history.last;
-        device.status = last.status;
-        device.lastLatency = last.latencyMs;
-        device.packetLoss = last.packetLoss;
-        device.lastResponseCode = last.responseCode;
-      }
-      // Clear expired maintenance windows
-      if (device.maintenanceUntil != null && DateTime.now().isAfter(device.maintenanceUntil!)) {
-        device.maintenanceUntil = null;
-      }
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _devices = devices;
-      _groups = groups;
-      _quietHours = quietHours;
-      _isLoading = false;
-    });
-
-    _log.info('PingIT started', data: {'devices': devices.length, 'groups': groups.length});
-    _checkForUpdates();
-  }
-
-  void _checkForUpdates() async {
-    try {
-      final update = await UpdateService().checkForUpdate();
-      if (update != null && mounted) {
-        setState(() => _startupUpdateInfo = update);
-      }
-    } catch (e) {
-      // Silently ignore update check failures on startup
-    }
-  }
-
-  Future<void> _updateDeviceStatuses() async {
-    if (_devices.isEmpty || _isPolling) return;
-
-    // Respect exponential backoff on repeated failures
-    final backoff = _pingService.backoffSeconds;
-    if (backoff > 0 && _lastPollAttempt != null) {
-      final elapsed = DateTime.now().difference(_lastPollAttempt!).inSeconds;
-      if (elapsed < backoff) return;
-    }
-
-    _isPolling = true;
-    _lastPollAttempt = DateTime.now();
-    try {
-      bool hadCriticalTransition = false;
-      await _pingService.pingAllDevices(
-        _devices,
-        onStatusChanged: (d, oldS, newS) {
-          if (oldS != DeviceStatus.unknown && oldS != newS) {
-            _log.info('Status change: ${d.name}', data: {
-              'address': d.address,
-              'from': oldS.name,
-              'to': newS.name,
-            });
-
-            // Intelligent Alert Suppression: don't alert if parent is down
-            bool shouldSuppress = false;
-            if (d.parentId != null && newS == DeviceStatus.offline) {
-              final parent = _devices.cast<Device?>().firstWhere(
-                (node) => node?.id == d.parentId,
-                orElse: () => null,
-              );
-              if (parent != null && parent.status == DeviceStatus.offline) {
-                shouldSuppress = true;
-              }
-            }
-
-            // Maintenance window suppression
-            if (d.isInMaintenance) {
-              shouldSuppress = true;
-            }
-
-            // Quiet hours suppression
-            if (_quietHours.isCurrentlyQuiet()) {
-              shouldSuppress = true;
-            }
-
-            if (!shouldSuppress) {
-              unawaited(_alertService.playAlert(newS));
-              unawaited(
-                _notificationService.showStatusChangeNotification(d, oldS, newS),
-              );
-              unawaited(_emailService.sendAlert(d, oldS, newS));
-              unawaited(_webhookService.sendAlert(d, oldS, newS));
-            } else {
-              final reason = d.isInMaintenance
-                  ? 'maintenance window'
-                  : _quietHours.isCurrentlyQuiet()
-                      ? 'quiet hours'
-                      : 'parent offline';
-              _log.info('Alert suppressed: ${d.name} (${oldS.name} → ${newS.name})',
-                  data: {'reason': reason, 'address': d.address});
-            }
-
-            // Critical transitions save immediately
-            if (newS == DeviceStatus.offline ||
-                (oldS == DeviceStatus.offline && newS == DeviceStatus.online)) {
-              hadCriticalTransition = true;
-            }
-          }
-        },
-      );
-
-      if (hadCriticalTransition) {
-        unawaited(_saveAll());
+    if (result == 'delete' && existingDevice != null) {
+      provider.removeDevice(existingDevice);
+    } else if (result is Device) {
+      if (existingDevice != null) {
+        provider.updateDevice(result);
       } else {
-        _scheduleSave();
+        provider.addDevice(result);
       }
-
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (e) {
-      _log.error('Failed to update statuses', data: {'error': '$e'});
-    } finally {
-      _isPolling = false;
     }
   }
 
-  void _scheduleSave() {
-    _saveDebounceTimer?.cancel();
-    _saveDebounceTimer = Timer(const Duration(seconds: 15), () {
-      unawaited(_saveAll());
-    });
-  }
+  void _navigateToDetailsScreen(BuildContext context, Device device) async {
+    final provider = context.read<DeviceProvider>();
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DeviceDetailsScreen(
+          device: device,
+          groups: provider.groups,
+          allDevices: provider.devices,
+        ),
+      ),
+    );
 
-  Future<void> _flushPendingSaves() async {
-    _saveDebounceTimer?.cancel();
-    await _saveAll();
-  }
-
-  Future<void> _saveAll() async {
-    if (_isSaving) {
-      _pendingSave = true;
-      return;
-    }
-
-    _isSaving = true;
-    try {
-      do {
-        _pendingSave = false;
-        await _storageService.saveDevices(_devices);
-        await _storageService.saveGroups(_groups);
-      } while (_pendingSave);
-    } catch (e) {
-      _log.error('Failed to persist data', data: {'error': '$e'});
-    } finally {
-      _isSaving = false;
+    if (result == 'delete') {
+      provider.removeDevice(device);
+    } else if (result is Device && result.id != device.id) {
+      // Clone result — add as new device
+      provider.addDevice(result);
+    } else {
+      // Just save in case details changed (mutated in place)
+      // Ideally we shouldn't mutate in place, but if we did:
+      provider.saveAll();
+      // Force rebuild? Provider might not know internal object changed if we don't call notifyListeners.
+      // But DeviceDetailsScreen usually modifies the object. 
+      // We should probably call a method on provider like 'refresh()' or 'updateDevice' even if same object.
+      provider.updateDevice(device); 
     }
   }
 
-  void _addGroup() {
+  void _addGroup(BuildContext context) {
     final controller = TextEditingController();
     void doCreate() {
       if (controller.text.isNotEmpty) {
-        setState(() {
-          _groups.add(
-            DeviceGroup(
-              id: DateTime.now().toString(),
-              name: controller.text,
-            ),
-          );
-        });
-        unawaited(_saveAll());
+        context.read<DeviceProvider>().addGroup(controller.text);
         Navigator.pop(context);
       }
     }
@@ -325,14 +142,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _renameGroup(DeviceGroup group) {
+  void _renameGroup(BuildContext context, DeviceGroup group) {
     final controller = TextEditingController(text: group.name);
     void doRename() {
       if (controller.text.isNotEmpty) {
-        setState(() {
-          group.name = controller.text;
-        });
-        unawaited(_saveAll());
+        context.read<DeviceProvider>().updateGroup(group, controller.text);
         Navigator.pop(context);
       }
     }
@@ -365,21 +179,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _deleteGroup(DeviceGroup group) {
+  void _deleteGroup(BuildContext context, DeviceGroup group) {
     showDialog(
       context: context,
       builder: (dialogContext) => CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.enter): () {
-            setState(() {
-              _groups.remove(group);
-              for (var device in _devices) {
-                if (device.groupId == group.id) {
-                  device.groupId = null;
-                }
-              }
-            });
-            unawaited(_saveAll());
+            context.read<DeviceProvider>().removeGroup(group);
             Navigator.pop(dialogContext);
           },
         },
@@ -401,15 +207,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
               TextButton(
                 onPressed: () {
-                  setState(() {
-                    _groups.remove(group);
-                    for (var device in _devices) {
-                      if (device.groupId == group.id) {
-                        device.groupId = null;
-                      }
-                    }
-                  });
-                  unawaited(_saveAll());
+                  context.read<DeviceProvider>().removeGroup(group);
                   Navigator.pop(dialogContext);
                 },
                 child: const Text('Delete', style: TextStyle(color: Colors.red)),
@@ -417,173 +215,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  void _navigateToAddDeviceScreen({Device? existingDevice}) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            AddDeviceScreen(
-              device: existingDevice,
-              groups: _groups,
-              existingDevices: _devices,
-            ),
-      ),
-    );
-
-    if (result == 'delete' && existingDevice != null) {
-      setState(() {
-        _devices.remove(existingDevice);
-        _cleanOrphanedParents();
-      });
-      unawaited(_saveAll());
-    } else if (result is Device) {
-      setState(() {
-        if (existingDevice != null) {
-          final index = _devices.indexOf(existingDevice);
-          if (index != -1) {
-            _devices[index] = result;
-          } else {
-            _devices.add(result);
-          }
-        } else {
-          _devices.add(result);
-        }
-      });
-      unawaited(_saveAll());
-    }
-  }
-
-  void _navigateToDetailsScreen(Device device) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            DeviceDetailsScreen(
-              device: device,
-              groups: _groups,
-              allDevices: _devices,
-            ),
-      ),
-    );
-
-    if (result == 'delete') {
-      setState(() {
-        _devices.remove(device);
-        _cleanOrphanedParents();
-      });
-      unawaited(_saveAll());
-    } else if (result is Device && result.id != device.id) {
-      // Clone result — add as new device
-      setState(() => _devices.add(result));
-      unawaited(_saveAll());
-    } else {
-      unawaited(_saveAll());
-      setState(() {});
-    }
-  }
-
-  void _handleBulkDelete(Set<String> ids) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.enter): () {
-            setState(() {
-              _devices.removeWhere((d) => ids.contains(d.id));
-              _cleanOrphanedParents();
-            });
-            unawaited(_saveAll());
-            Navigator.pop(dialogContext);
-          },
-        },
-        child: Focus(
-          autofocus: true,
-          child: AlertDialog(
-            title: Text('Delete ${ids.length} devices?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-            content: Text('This action cannot be undone.', style: GoogleFonts.inter()),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-              TextButton(
-                onPressed: () {
-                  setState(() {
-                    _devices.removeWhere((d) => ids.contains(d.id));
-                    _cleanOrphanedParents();
-                  });
-                  unawaited(_saveAll());
-                  Navigator.pop(dialogContext);
-                },
-                child: const Text('Delete', style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _handleBulkPause(Set<String> ids) {
-    setState(() {
-      for (var d in _devices) {
-        if (ids.contains(d.id)) d.isPaused = true;
-      }
-    });
-    unawaited(_saveAll());
-  }
-
-  void _handleBulkResume(Set<String> ids) {
-    setState(() {
-      for (var d in _devices) {
-        if (ids.contains(d.id)) d.isPaused = false;
-      }
-    });
-    unawaited(_saveAll());
-  }
-
-  void _handleBulkMoveToGroup(Set<String> ids) {
-    showDialog(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text('Move to Group', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-        children: [
-          SimpleDialogOption(
-            onPressed: () {
-              setState(() {
-                for (var d in _devices) {
-                  if (ids.contains(d.id)) d.groupId = null;
-                }
-              });
-              unawaited(_saveAll());
-              Navigator.pop(context);
-            },
-            child: const Text('Unassigned'),
-          ),
-          ..._groups.map((g) => SimpleDialogOption(
-            onPressed: () {
-              setState(() {
-                for (var d in _devices) {
-                  if (ids.contains(d.id)) d.groupId = g.id;
-                }
-              });
-              unawaited(_saveAll());
-              Navigator.pop(context);
-            },
-            child: Text(g.name),
-          )),
-        ],
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<DeviceProvider>();
+
     return CallbackShortcuts(
       bindings: {
-        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => _navigateToAddDeviceScreen(),
-        const SingleActivator(LogicalKeyboardKey.keyG, control: true): () => _addGroup(),
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => _navigateToAddDeviceScreen(context),
+        const SingleActivator(LogicalKeyboardKey.keyG, control: true): () => _addGroup(context),
       },
       child: Focus(
         autofocus: true,
@@ -633,25 +276,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               Expanded(
                 child: Column(
                   children: [
-                    // Update banner — takes layout space, not floating
-                    if (_startupUpdateInfo != null)
+                    if (provider.startupUpdateInfo != null)
                       MaterialBanner(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         leading: const Icon(Icons.system_update, color: Color(0xFF3B82F6)),
                         content: Text(
-                          'PingIT v${_startupUpdateInfo!.version} is available',
+                          'PingIT v${provider.startupUpdateInfo!.version} is available',
                           style: GoogleFonts.inter(fontWeight: FontWeight.w600),
                         ),
                         actions: [
                           TextButton(
-                            onPressed: () => setState(() {
-                              _selectedIndex = 3;
-                              _startupUpdateInfo = null;
-                            }),
+                            onPressed: () {
+                               setState(() => _selectedIndex = 3);
+                               // Ideally we don't dismiss, just nav to settings
+                               // But maybe user wants to dismiss banner?
+                               provider.dismissUpdateBanner();
+                            },
                             child: const Text('VIEW'),
                           ),
                           TextButton(
-                            onPressed: () => setState(() => _startupUpdateInfo = null),
+                            onPressed: () => provider.dismissUpdateBanner(),
                             child: const Text('DISMISS'),
                           ),
                         ],
@@ -661,66 +305,38 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         index: _selectedIndex,
                         children: [
                           DeviceListScreen(
-                            devices: _devices,
-                            groups: _groups,
-                            isLoading: _isLoading,
-                            onUpdate: () => unawaited(_saveAll()),
-                            onGroupUpdate: () => unawaited(_saveAll()),
-                            onAddDevice: () => _navigateToAddDeviceScreen(),
+                            devices: provider.devices,
+                            groups: provider.groups,
+                            isLoading: provider.isLoading,
+                            onAddDevice: () => _navigateToAddDeviceScreen(context),
                             onQuickScan: (addr) => _navigateToAddDeviceScreen(
+                              context,
                               existingDevice: Device(name: 'New Node', address: addr),
                             ),
-                            onAddGroup: _addGroup,
-                            onRenameGroup: _renameGroup,
-                            onDeleteGroup: _deleteGroup,
+                            onAddGroup: () => _addGroup(context),
+                            onRenameGroup: (g) => _renameGroup(context, g),
+                            onDeleteGroup: (g) => _deleteGroup(context, g),
                             onEditDevice: (d) =>
-                                _navigateToAddDeviceScreen(existingDevice: d),
-                            onTapDevice: _navigateToDetailsScreen,
-                            onBulkDelete: _handleBulkDelete,
-                            onBulkPause: _handleBulkPause,
-                            onBulkResume: _handleBulkResume,
-                            onBulkMoveToGroup: _handleBulkMoveToGroup,
+                                _navigateToAddDeviceScreen(context, existingDevice: d),
+                            onTapDevice: (d) => _navigateToDetailsScreen(context, d),
                             statusFilter: _hudStatusFilter,
                             onStatusFilterChanged: (filter) {
                               setState(() => _hudStatusFilter = filter);
                             },
                           ),
-                          TopologyScreen(
-                            devices: _devices,
-                            onUpdate: () => unawaited(_saveAll()),
-                          ),
+                          const TopologyScreen(),
                           LogsScreen(
-                            devices: _devices,
-                            groups: _groups,
-                            onTapDevice: _navigateToDetailsScreen,
+                            devices: provider.devices,
+                            groups: provider.groups,
+                            onTapDevice: (d) => _navigateToDetailsScreen(context, d),
                           ),
                           SettingsScreen(
-                            devices: _devices,
-                            groups: _groups,
-                            onImported: (newDevices) {
-                              setState(() {
-                                final existingAddresses = _devices
-                                    .map((d) => d.address.trim().toLowerCase())
-                                    .toSet();
-                                final uniqueDevices = newDevices.where(
-                                  (d) => existingAddresses.add(d.address.trim().toLowerCase()),
-                                );
-                                _devices.addAll(uniqueDevices);
-                              });
-                              unawaited(_saveAll());
-                            },
-                            onEmailSettingsChanged: (settings) {
-                              unawaited(_storageService.saveEmailSettings(settings));
-                              _emailService.updateSettings(settings);
-                            },
-                            onWebhookSettingsChanged: (settings) {
-                              unawaited(_storageService.saveWebhookSettings(settings));
-                              _webhookService.updateSettings(settings);
-                            },
-                            onQuietHoursChanged: (settings) {
-                              setState(() => _quietHours = settings);
-                              unawaited(_storageService.saveQuietHours(settings));
-                            },
+                            devices: provider.devices,
+                            groups: provider.groups,
+                            onImported: (newDevices) => provider.importDevices(newDevices),
+                            onEmailSettingsChanged: (settings) => provider.updateEmailSettings(settings),
+                            onWebhookSettingsChanged: (settings) => provider.updateWebhookSettings(settings),
+                            onQuietHoursChanged: (settings) => provider.updateQuietHours(settings),
                           ),
                         ],
                       ),

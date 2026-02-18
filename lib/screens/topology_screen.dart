@@ -1,15 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:provider/provider.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/providers/device_provider.dart';
 
 class TopologyScreen extends StatefulWidget {
-  const TopologyScreen({
-    super.key,
-    required this.devices,
-    required this.onUpdate,
-  });
-  final List<Device> devices;
-  final VoidCallback onUpdate;
+  const TopologyScreen({super.key});
 
   @override
   State<TopologyScreen> createState() => _TopologyScreenState();
@@ -39,6 +35,8 @@ class _TopologyScreenState extends State<TopologyScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Watch devices directly from provider
+    final devices = context.watch<DeviceProvider>().devices;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
@@ -61,7 +59,6 @@ class _TopologyScreenState extends State<TopologyScreen>
       ),
       body: MouseRegion(
         onHover: (e) {
-          // Update ValueNotifier instead of calling setState — avoids full widget rebuild.
           _mouseNotifier.value = e.localPosition;
         },
         child: Stack(
@@ -72,7 +69,7 @@ class _TopologyScreenState extends State<TopologyScreen>
                 return CustomPaint(
                   size: Size.infinite,
                   painter: TopologyPainter(
-                    devices: widget.devices,
+                    devices: devices,
                     connectingSource: _connectingSource,
                     mousePos: mousePos,
                     isDark: isDark,
@@ -81,16 +78,16 @@ class _TopologyScreenState extends State<TopologyScreen>
                 );
               },
             ),
-            ...widget.devices.map((device) => _buildDraggableNode(device)),
+            ...devices.map((device) => _buildDraggableNode(device, devices)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildDraggableNode(Device device) {
+  Widget _buildDraggableNode(Device device, List<Device> allDevices) {
     if (device.topologyX == null) {
-      final index = widget.devices.indexOf(device);
+      final index = allDevices.indexOf(device);
       device.topologyX = 100.0 + (index % 5) * 150.0;
       device.topologyY = 100.0 + (index ~/ 5) * 150.0;
     }
@@ -116,7 +113,8 @@ class _TopologyScreenState extends State<TopologyScreen>
             device.topologyX = localPos.dx;
             device.topologyY = localPos.dy;
           });
-          widget.onUpdate();
+          // Save directly via provider
+          context.read<DeviceProvider>().saveAll();
         },
         child: GestureDetector(
           onTap: () {
@@ -128,7 +126,7 @@ class _TopologyScreenState extends State<TopologyScreen>
               } else {
                 device.parentId = _connectingSource!.id;
                 _connectingSource = null;
-                widget.onUpdate();
+                context.read<DeviceProvider>().saveAll();
               }
             });
           },
@@ -137,7 +135,7 @@ class _TopologyScreenState extends State<TopologyScreen>
               device.parentId = null;
               _connectingSource = null;
             });
-            widget.onUpdate();
+            context.read<DeviceProvider>().saveAll();
           },
           child: _buildNodeContent(device, statusColor, false),
         ),

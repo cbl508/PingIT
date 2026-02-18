@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/services/ping_service.dart';
 
 class AddDeviceScreen extends StatefulWidget {
   const AddDeviceScreen({
@@ -34,6 +35,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   late DeviceType _selectedType;
   late CheckType _selectedCheckType;
   DateTime? _maintenanceUntil;
+  
+  // Connection Testing State
+  bool _isTesting = false;
+  String? _testResult;
+  Color? _testStatusColor;
 
   final List<int> _intervalOptions = [5, 10, 30, 60, 300, 600];
   final List<int> _thresholdOptions = [1, 2, 3, 5, 10];
@@ -75,6 +81,76 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _latencyThresholdController.dispose();
     _packetLossThresholdController.dispose();
     super.dispose();
+  }
+
+  Future<void> _testConnection() async {
+    // Basic validation before testing
+    final address = _addressController.text.trim();
+    if (address.isEmpty || !_isValidAddress(address)) {
+      setState(() {
+        _testResult = 'Invalid Address';
+        _testStatusColor = Colors.red;
+      });
+      return;
+    }
+
+    final port = _selectedCheckType == CheckType.tcp
+        ? int.tryParse(_portController.text.trim())
+        : null;
+        
+    if (_selectedCheckType == CheckType.tcp && port == null) {
+      setState(() {
+        _testResult = 'Invalid Port';
+        _testStatusColor = Colors.red;
+      });
+      return;
+    }
+
+    setState(() {
+      _isTesting = true;
+      _testResult = 'Testing connection...';
+      _testStatusColor = Colors.grey;
+    });
+
+    try {
+      // Create a temporary device object for the check
+      final tempDevice = Device(
+        name: 'Temp',
+        address: address,
+        checkType: _selectedCheckType,
+        port: port,
+      );
+
+      final result = await PingService().performSingleCheck(tempDevice);
+
+      if (!mounted) return;
+
+      if (result.status == DeviceStatus.online) {
+        setState(() {
+          _testResult = 'Online (${result.latency?.toStringAsFixed(0)}ms)';
+          _testStatusColor = Colors.green;
+        });
+      } else if (result.status == DeviceStatus.degraded) {
+        setState(() {
+           _testResult = 'Degraded (${result.latency?.toStringAsFixed(0)}ms, ${result.packetLoss.toStringAsFixed(0)}% loss)';
+           _testStatusColor = Colors.orange;
+        });
+      } else {
+        setState(() {
+           final extra = result.responseCode != null ? 'HTTP ${result.responseCode}' : 'Unreachable';
+           _testResult = 'Offline ($extra)';
+           _testStatusColor = Colors.red;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _testResult = 'Error: $e';
+        _testStatusColor = Colors.red;
+      });
+    } finally {
+      if (mounted) setState(() => _isTesting = false);
+    }
   }
 
   void _saveDevice() {
@@ -215,6 +291,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     icon: Icons.settings_input_component,
                     children: [
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
                             child: DropdownButtonFormField<CheckType>(
@@ -259,6 +336,39 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                               ),
                             ),
                           ],
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      // Test Connection Button
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _isTesting ? null : _testConnection,
+                            icon: _isTesting 
+                              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.play_arrow, size: 16),
+                            label: Text(_isTesting ? 'Testing...' : 'Test Connection'),
+                          ),
+                          const SizedBox(width: 16),
+                          if (_testResult != null)
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: _testStatusColor?.withValues(alpha: 0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: _testStatusColor?.withValues(alpha: 0.3) ?? Colors.transparent),
+                                ),
+                                child: Text(
+                                  _testResult!,
+                                  style: GoogleFonts.jetBrainsMono(
+                                    color: _testStatusColor, 
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ],
@@ -573,7 +683,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ? 'Enter a valid host or URL'
                 : 'Enter a valid host or IP';
           }
-          // Duplicate address check
+          // Duplicate address check (case insensitive)
           final normalizedValue = value.toLowerCase();
           final isDuplicate = widget.existingDevices.any((d) {
             // Allow own address when editing
@@ -599,17 +709,23 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
   bool _isValidAddress(String value) {
     if (_selectedCheckType == CheckType.http) {
+      // Must be a valid URL format for HTTP
       final normalized =
           value.startsWith('http://') || value.startsWith('https://')
           ? value
-          : 'https://$value';
+          : 'http://$value'; // Default to http for validation if missing
+          
       final uri = Uri.tryParse(normalized);
-      return uri != null && uri.host.isNotEmpty;
+      if (uri == null || uri.host.isEmpty) return false;
+      
+      // Ensure it has a dot (e.g., localhost.com or at least localhost)
+      // Actually localhost is valid without dot.
+      return true;
+    } else {
+      // ICMP or TCP: Must be hostname or IP, no scheme/path
+      if (value.contains('://') || value.contains('/')) return false;
+      return _hostLikePattern.hasMatch(value);
     }
-
-    final uriHost = Uri.tryParse('scheme://$value')?.host ?? '';
-    final host = uriHost.isNotEmpty ? uriHost : value;
-    return _hostLikePattern.hasMatch(host);
   }
 
   Widget _buildMaintenanceWindowPicker() {

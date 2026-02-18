@@ -8,6 +8,19 @@ import 'package:pingit/models/device_model.dart';
 import 'package:pingit/services/email_service.dart';
 import 'package:pingit/services/webhook_service.dart';
 
+// Top-level function for compute
+String _encodeDevices(List<Map<String, dynamic>> devicesJson) {
+  return jsonEncode(devicesJson);
+}
+
+String _encodeGroups(List<Map<String, dynamic>> groupsJson) {
+  return jsonEncode(groupsJson);
+}
+
+List<dynamic> _decodeList(String json) {
+  return jsonDecode(json) as List<dynamic>;
+}
+
 class StorageService {
   static const String _emailPasswordKey = 'pingit_email_password';
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
@@ -48,7 +61,9 @@ class StorageService {
       final file = await _devicesFile;
       if (!await file.exists()) return [];
       final contents = await file.readAsString();
-      final List<dynamic> json = jsonDecode(contents);
+      
+      // Decode on a background thread to avoid UI jank
+      final List<dynamic> json = await compute(_decodeList, contents);
       return json.map((e) => Device.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Failed to load devices: $e');
@@ -57,8 +72,13 @@ class StorageService {
   }
 
   Future<void> saveDevices(List<Device> devices) async {
-    // Snapshot JSON synchronously before any async gap to avoid race conditions
-    final snapshot = jsonEncode(devices.map((e) => e.toJson()).toList());
+    // Snapshot state synchronously to avoid race conditions
+    // But map to JSON maps first (lightweight)
+    final deviceMaps = devices.map((e) => e.toJson()).toList();
+    
+    // Encode on background thread
+    final snapshot = await compute(_encodeDevices, deviceMaps);
+    
     final file = await _devicesFile;
     await file.writeAsString(snapshot);
   }
@@ -69,7 +89,8 @@ class StorageService {
       final file = await _groupsFile;
       if (!await file.exists()) return [];
       final contents = await file.readAsString();
-      final List<dynamic> json = jsonDecode(contents);
+      
+      final List<dynamic> json = await compute(_decodeList, contents);
       return json.map((e) => DeviceGroup.fromJson(e)).toList();
     } catch (e) {
       debugPrint('Failed to load groups: $e');
@@ -78,8 +99,9 @@ class StorageService {
   }
 
   Future<void> saveGroups(List<DeviceGroup> groups) async {
-    // Snapshot JSON synchronously before any async gap to avoid race conditions
-    final snapshot = jsonEncode(groups.map((e) => e.toJson()).toList());
+    final groupMaps = groups.map((e) => e.toJson()).toList();
+    final snapshot = await compute(_encodeGroups, groupMaps);
+    
     final file = await _groupsFile;
     await file.writeAsString(snapshot);
   }
@@ -115,7 +137,9 @@ class StorageService {
   Future<void> saveEmailSettings(EmailSettings settings) async {
     final file = await _emailSettingsFile;
     await file.writeAsString(jsonEncode(settings.toJson()));
-    await _secureStorage.write(key: _emailPasswordKey, value: settings.password);
+    if (settings.password.isNotEmpty) {
+      await _secureStorage.write(key: _emailPasswordKey, value: settings.password);
+    }
   }
 
   // Webhook Settings
