@@ -2,7 +2,7 @@ name: pingit
 description: "Cross-platform infrastructure monitoring dashboard with real-time health checks, alerts, and topology visualization."
 publish_to: 'none'
 
-version: 1.3.3
+version: 1.3.4
 
 environment:
   sdk: ^3.9.2
