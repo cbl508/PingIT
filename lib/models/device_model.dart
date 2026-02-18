@@ -42,7 +42,15 @@ class StatusHistory {
   final double? packetLoss;
   final int? responseCode;
 
-  factory StatusHistory.fromJson(Map<String, dynamic> json) => _$StatusHistoryFromJson(json);
+  factory StatusHistory.fromJson(Map<String, dynamic> json) {
+    return StatusHistory(
+      timestamp: DateTime.parse(json['timestamp'] as String),
+      status: $enumDecode(_$DeviceStatusEnumMap, json['status']),
+      latencyMs: (json['latencyMs'] as num?)?.toDouble(),
+      packetLoss: (json['packetLoss'] as num?)?.toDouble(),
+      responseCode: json['responseCode'] as int?,
+    );
+  }
   Map<String, dynamic> toJson() => _$StatusHistoryToJson(this);
 }
 

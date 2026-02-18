@@ -7,8 +7,8 @@ class AppTheme {
     final colorScheme = ColorScheme.fromSeed(
       seedColor: const Color(0xFF3B82F6),
       brightness: brightness,
-      surface: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
-      surfaceContainer: isDark ? const Color(0xFF1E293B) : Colors.white,
+      surface: isDark ? const Color(0xFF020617) : const Color(0xFFF8FAFC),
+      surfaceContainer: isDark ? const Color(0xFF0F172A) : Colors.white,
     );
 
     return ThemeData(
@@ -33,7 +33,7 @@ class AppTheme {
         ),
       ),
       cardTheme: CardThemeData(
-        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        color: isDark ? const Color(0xFF0F172A) : Colors.white,
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
@@ -46,7 +46,7 @@ class AppTheme {
         ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -74,7 +74,7 @@ class AppTheme {
         ),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
         elevation: 0,
         indicatorColor: colorScheme.primaryContainer,
         labelTextStyle: WidgetStatePropertyAll(
@@ -82,7 +82,7 @@ class AppTheme {
         ),
       ),
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+        backgroundColor: isDark ? const Color(0xFF020617) : Colors.white,
         indicatorColor: colorScheme.primaryContainer,
         selectedIconTheme: IconThemeData(color: colorScheme.onPrimaryContainer),
         unselectedIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),

@@ -254,6 +254,80 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     );
   }
 
+  Widget _buildCheckTypeDropdown() {
+    return DropdownButtonFormField<CheckType>(
+      initialValue: _selectedCheckType,
+      style: GoogleFonts.inter(
+        color: Theme.of(context).textTheme.bodyMedium?.color,
+      ),
+      decoration: InputDecoration(
+        prefixIcon: const Icon(Icons.check_circle_outline),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        labelText: 'Check Type',
+      ),
+      items: const [
+        DropdownMenuItem(
+          value: CheckType.icmp,
+          child: Text('ICMP (Standard Ping)'),
+        ),
+        DropdownMenuItem(
+          value: CheckType.tcp,
+          child: Text('TCP Socket (Service)'),
+        ),
+        DropdownMenuItem(
+          value: CheckType.http,
+          child: Text('HTTP/S (Web & API)'),
+        ),
+      ],
+      onChanged: (val) => setState(() => _selectedCheckType = val!),
+    );
+  }
+
+  Widget _buildLatencyThresholdField() {
+    return TextFormField(
+      controller: _latencyThresholdController,
+      keyboardType: TextInputType.number,
+      style: GoogleFonts.inter(),
+      decoration: InputDecoration(
+        labelText: 'Latency Threshold (ms)',
+        labelStyle: GoogleFonts.inter(),
+        prefixIcon: const Icon(Icons.speed),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        helperText: 'Mark degraded above this latency',
+      ),
+      validator: (val) {
+        if (val == null || val.trim().isEmpty) return null;
+        final v = double.tryParse(val.trim());
+        if (v == null || v <= 0) return 'Must be a positive number';
+        if (v > 10000) return 'Maximum is 10,000ms';
+        return null;
+      },
+    );
+  }
+
+  Widget _buildPacketLossThresholdField() {
+    return TextFormField(
+      controller: _packetLossThresholdController,
+      keyboardType: TextInputType.number,
+      style: GoogleFonts.inter(),
+      decoration: InputDecoration(
+        labelText: 'Packet Loss Threshold (%)',
+        labelStyle: GoogleFonts.inter(),
+        prefixIcon: const Icon(Icons.leak_add),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        helperText: 'Mark degraded above this loss %',
+      ),
+      validator: (val) {
+        if (val == null || val.trim().isEmpty) return null;
+        final v = double.tryParse(val.trim());
+        if (v == null || v < 0 || v > 100) return 'Must be 0-100';
+        return null;
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.device != null;
@@ -274,7 +348,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 64),
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 860),
@@ -364,57 +438,54 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     title: 'Monitoring Configuration',
                     icon: Icons.settings_input_component,
                     children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: DropdownButtonFormField<CheckType>(
-                              initialValue: _selectedCheckType,
-                              style: GoogleFonts.inter(
-                                color: Theme.of(context).textTheme.bodyMedium?.color,
-                              ),
-                              decoration: InputDecoration(
-                                prefixIcon: const Icon(Icons.check_circle_outline),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                labelText: 'Check Type',
-                              ),
-                              items: const [
-                                DropdownMenuItem(
-                                  value: CheckType.icmp,
-                                  child: Text('ICMP (Standard Ping)'),
-                                ),
-                                DropdownMenuItem(
-                                  value: CheckType.tcp,
-                                  child: Text('TCP Socket (Service)'),
-                                ),
-                                DropdownMenuItem(
-                                  value: CheckType.http,
-                                  child: Text('HTTP/S (Web & API)'),
-                                ),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final isStacked = constraints.maxWidth < 450;
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (!isStacked && _selectedCheckType == CheckType.tcp)
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      flex: 3,
+                                      child: _buildCheckTypeDropdown(),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      flex: 1,
+                                      child: _buildField(
+                                        _portController,
+                                        'Port',
+                                        Icons.numbers,
+                                        isRequired: true,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              else ...[
+                                _buildCheckTypeDropdown(),
+                                if (_selectedCheckType == CheckType.tcp) ...[
+                                  const SizedBox(height: 16),
+                                  _buildField(
+                                    _portController,
+                                    'Port',
+                                    Icons.numbers,
+                                    isRequired: true,
+                                  ),
+                                ],
                               ],
-                              onChanged: (val) =>
-                                  setState(() => _selectedCheckType = val!),
-                            ),
-                          ),
-                          if (_selectedCheckType == CheckType.tcp) ...[
-                            const SizedBox(width: 16),
-                            SizedBox(
-                              width: 120,
-                              child: _buildField(
-                                _portController,
-                                'Port',
-                                Icons.numbers,
-                                isRequired: true,
-                              ),
-                            ),
-                          ],
-                        ],
+                            ],
+                          );
+                        },
                       ),
                       const SizedBox(height: 16),
-                      // Test Connection Button
-                      Row(
+                      // Test Connection Section
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           OutlinedButton.icon(
                             onPressed: _isTesting ? null : _testConnection,
@@ -422,25 +493,35 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                               ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                               : const Icon(Icons.play_arrow, size: 16),
                             label: Text(_isTesting ? 'Testing...' : 'Test Connection'),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
                           ),
-                          const SizedBox(width: 16),
                           if (_testResult != null)
-                            Expanded(
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: _testStatusColor?.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: _testStatusColor?.withValues(alpha: 0.3) ?? Colors.transparent),
-                                ),
-                                child: Text(
-                                  _testResult!,
-                                  style: GoogleFonts.jetBrainsMono(
-                                    color: _testStatusColor, 
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: _testStatusColor?.withValues(alpha: 0.08),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: _testStatusColor?.withValues(alpha: 0.2) ?? Colors.transparent),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.terminal_outlined, size: 14, color: _testStatusColor),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      _testResult!,
+                                      style: GoogleFonts.jetBrainsMono(
+                                        color: _testStatusColor, 
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
                             ),
                         ],
@@ -573,51 +654,27 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             setState(() => _selectedThreshold = val!),
                       ),
                       const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              controller: _latencyThresholdController,
-                              keyboardType: TextInputType.number,
-                              style: GoogleFonts.inter(),
-                              decoration: InputDecoration(
-                                labelText: 'Latency Threshold (ms)',
-                                labelStyle: GoogleFonts.inter(),
-                                prefixIcon: const Icon(Icons.speed),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                helperText: 'Mark degraded above this latency',
-                              ),
-                              validator: (val) {
-                                if (val == null || val.trim().isEmpty) return null;
-                                final v = double.tryParse(val.trim());
-                                if (v == null || v <= 0) return 'Must be a positive number';
-                                if (v > 10000) return 'Maximum is 10,000ms';
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: TextFormField(
-                              controller: _packetLossThresholdController,
-                              keyboardType: TextInputType.number,
-                              style: GoogleFonts.inter(),
-                              decoration: InputDecoration(
-                                labelText: 'Packet Loss Threshold (%)',
-                                labelStyle: GoogleFonts.inter(),
-                                prefixIcon: const Icon(Icons.leak_add),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                                helperText: 'Mark degraded above this loss %',
-                              ),
-                              validator: (val) {
-                                if (val == null || val.trim().isEmpty) return null;
-                                final v = double.tryParse(val.trim());
-                                if (v == null || v < 0 || v > 100) return 'Must be 0-100';
-                                return null;
-                              },
-                            ),
-                          ),
-                        ],
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final isStacked = constraints.maxWidth < 500;
+                          return Column(
+                            children: [
+                              if (isStacked) ...[
+                                _buildLatencyThresholdField(),
+                                const SizedBox(height: 16),
+                                _buildPacketLossThresholdField(),
+                              ] else
+                                Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(child: _buildLatencyThresholdField()),
+                                    const SizedBox(width: 16),
+                                    Expanded(child: _buildPacketLossThresholdField()),
+                                  ],
+                                ),
+                            ],
+                          );
+                        },
                       ),
                       const SizedBox(height: 16),
                       _buildMaintenanceWindowPicker(),
@@ -630,22 +687,28 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 32),
-                  FilledButton(
+                  const SizedBox(height: 40),
+                  FilledButton.icon(
                     onPressed: _saveDevice,
+                    icon: Icon(isEditing ? Icons.save : Icons.add_moderator),
                     style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      padding: const EdgeInsets.symmetric(vertical: 20),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                       ),
+                      elevation: 0,
                     ),
-                    child: Text(
-                      isEditing ? 'Save Changes' : 'Create Node',
-                      style: GoogleFonts.inter(fontWeight: FontWeight.w700),
+                    label: Text(
+                      isEditing ? 'Save Changes' : 'Create Monitor Node',
+                      style: GoogleFonts.inter(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 16,
+                        letterSpacing: -0.2,
+                      ),
                     ),
                   ),
                   if (isEditing) ...[
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
                     OutlinedButton.icon(
                       onPressed: _confirmDelete,
                       icon: const Icon(
@@ -658,16 +721,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                         style: GoogleFonts.inter(
                           color: Colors.red,
                           fontWeight: FontWeight.w700,
-                          fontSize: 12,
+                          fontSize: 13,
                         ),
                       ),
                       style: OutlinedButton.styleFrom(
                         side: BorderSide(
-                          color: Colors.red.withValues(alpha: 0.5),
+                          color: Colors.red.withValues(alpha: 0.3),
                         ),
-                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        padding: const EdgeInsets.symmetric(vertical: 18),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(16),
                         ),
                       ),
                     ),
@@ -691,15 +754,17 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
+        color: isDark 
+            ? const Color(0xFF0F172A).withValues(alpha: 0.5) 
+            : Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
+          color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.1),
         ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
+            color: Colors.black.withValues(alpha: 0.1),
+            blurRadius: 12,
             offset: const Offset(0, 4),
           ),
         ],
@@ -716,6 +781,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 style: GoogleFonts.inter(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
+                  letterSpacing: -0.3,
                 ),
               ),
             ],
@@ -820,10 +886,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                   ? 'Until ${DateFormat('MMM dd, yyyy HH:mm').format(_maintenanceUntil!)}'
                   : 'No maintenance scheduled',
               style: GoogleFonts.inter(
+                fontSize: 13,
                 color: hasWindow ? Theme.of(context).colorScheme.primary : Colors.grey,
               ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: 8),
           if (hasWindow)
             IconButton(
               icon: const Icon(Icons.clear, size: 18),
