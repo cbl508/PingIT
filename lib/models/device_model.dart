@@ -84,6 +84,7 @@ class Device {
     this.port,
     this.status = DeviceStatus.unknown,
     this.isPaused = false,
+    this.isPinned = false,
     this.lastLatency,
     this.packetLoss,
     this.lastResponseCode,
@@ -96,6 +97,13 @@ class Device {
     this.topologyX,
     this.topologyY,
     this.parentId,
+    this.sslExpiryDate,
+    this.sslExpiryWarningDays,
+    this.keyword,
+    this.dnsExpectedIp,
+    this.dnsRecordType,
+    this.discordWebhookUrl,
+    this.slackWebhookUrl,
     List<StatusHistory>? history,
   }) : id = id ?? DateTime.now().microsecondsSinceEpoch.toString(),
        history = history ?? [];
@@ -110,6 +118,7 @@ class Device {
   CheckType checkType;
   int? port;
   bool isPaused;
+  bool isPinned;
   int failureThreshold;
   double? latencyThreshold;
   double? packetLossThreshold;
@@ -117,6 +126,17 @@ class Device {
   int consecutiveFailures;
   int maxHistory;
   DateTime? maintenanceUntil;
+
+  // Advanced Monitoring
+  DateTime? sslExpiryDate;
+  int? sslExpiryWarningDays;
+  String? keyword;
+  String? dnsExpectedIp;
+  String? dnsRecordType;
+
+  // Notification Integrations
+  String? discordWebhookUrl;
+  String? slackWebhookUrl;
 
   bool get isInMaintenance {
     if (maintenanceUntil == null) return false;

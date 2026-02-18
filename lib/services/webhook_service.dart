@@ -4,23 +4,29 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
 
-enum WebhookType { generic, slack, discord }
+enum WebhookType { generic, slack, discord, telegram }
 
 class WebhookSettings {
   final String url;
   final WebhookType type;
   final bool enabled;
+  final String? botToken; // For Telegram
+  final String? chatId;   // For Telegram
 
   WebhookSettings({
     this.url = '',
     this.type = WebhookType.generic,
     this.enabled = false,
+    this.botToken,
+    this.chatId,
   });
 
   Map<String, dynamic> toJson() => {
     'url': url,
     'type': type.name,
     'enabled': enabled,
+    'botToken': botToken,
+    'chatId': chatId,
   };
 
   factory WebhookSettings.fromJson(Map<String, dynamic> json) => WebhookSettings(
@@ -30,6 +36,8 @@ class WebhookSettings {
       orElse: () => WebhookType.generic,
     ),
     enabled: json['enabled'] ?? false,
+    botToken: json['botToken'],
+    chatId: json['chatId'],
   );
 }
 
@@ -96,26 +104,51 @@ class WebhookService {
 
   Future<void> sendAlert(Device device, DeviceStatus oldStatus, DeviceStatus newStatus) async {
     if (_settings == null || !_settings!.enabled) return;
-    if (_settings!.url.trim().isEmpty) return;
     if (oldStatus == newStatus || newStatus == DeviceStatus.unknown) return;
 
-    final payload = _buildPayload(device, oldStatus, newStatus);
+    String? targetUrl;
+    Object? payload;
+
+    if (_settings!.type == WebhookType.telegram) {
+      if (_settings!.botToken == null || _settings!.chatId == null) return;
+      targetUrl = 'https://api.telegram.org/bot${_settings!.botToken}/sendMessage';
+      payload = {
+        'chat_id': _settings!.chatId,
+        'text': _buildTelegramText(device, oldStatus, newStatus),
+        'parse_mode': 'HTML',
+      };
+    } else {
+      if (_settings!.url.trim().isEmpty) return;
+      targetUrl = _settings!.url;
+      payload = _buildPayload(device, oldStatus, newStatus);
+    }
+
     for (int attempt = 0; attempt < 3; attempt++) {
       try {
         await http.post(
-          Uri.parse(_settings!.url),
+          Uri.parse(targetUrl!),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(payload),
         ).timeout(const Duration(seconds: 10));
-        debugPrint('Webhook sent to ${_settings!.url}');
+        debugPrint('Alert sent to ${_settings!.type.name}');
         return;
       } catch (e) {
-        debugPrint('Webhook attempt ${attempt + 1}/3 failed: $e');
+        debugPrint('Alert attempt ${attempt + 1}/3 failed: $e');
         if (attempt < 2) {
           await Future.delayed(Duration(seconds: 2 << attempt));
         }
       }
     }
+  }
+
+  String _buildTelegramText(Device device, DeviceStatus oldStatus, DeviceStatus newStatus) {
+    final emoji = newStatus == DeviceStatus.offline ? '🔴' : (newStatus == DeviceStatus.degraded ? '🟡' : '🟢');
+    final statusStr = newStatus.name.toUpperCase();
+    return '<b>$emoji Node Alert: ${device.name}</b>\n'
+           'Status: <code>$statusStr</code>\n'
+           'Address: <code>${device.address}</code>\n'
+           'Type: ${device.checkType.name.toUpperCase()}\n'
+           'Time: ${DateFormat('HH:mm:ss').format(DateTime.now())}';
   }
 
   Map<String, dynamic> _buildPayload(Device device, DeviceStatus oldStatus, DeviceStatus newStatus) {
@@ -127,50 +160,68 @@ class WebhookService {
     switch (_settings!.type) {
       case WebhookType.slack:
         final color = isOffline ? '#EF4444' : (isDegraded ? '#F59E0B' : '#10B981');
-        final emoji = isRecovery
-            ? ':white_check_mark:'
-            : isOffline
-                ? ':red_circle:'
-                : (isDegraded ? ':large_yellow_circle:' : ':large_green_circle:');
-        final label = isRecovery ? 'RECOVERED' : newStatus.name.toUpperCase();
+        final statusLabel = isRecovery ? 'RECOVERED' : newStatus.name.toUpperCase();
         return {
           'attachments': [
             {
               'color': color,
               'blocks': [
                 {
-                  'type': 'section',
+                  'type': 'header',
                   'text': {
-                    'type': 'mrkdwn',
-                    'text': '$emoji *${device.name}* is now *$label*\n'
-                        '`${device.address}` | ${device.checkType.name.toUpperCase()} | $timestamp',
-                  },
+                    'type': 'plain_text',
+                    'text': 'Node Status Change: ${device.name}',
+                    'emoji': true
+                  }
                 },
-              ],
-            },
-          ],
+                {
+                  'type': 'section',
+                  'fields': [
+                    {'type': 'mrkdwn', 'text': '*Status:*\n$statusLabel'},
+                    {'type': 'mrkdwn', 'text': '*Address:*\n`${device.address}`'},
+                    {'type': 'mrkdwn', 'text': '*Type:*\n${device.checkType.name.toUpperCase()}'},
+                    {'type': 'mrkdwn', 'text': '*Time:*\n$timestamp'}
+                  ]
+                },
+                if (device.lastLatency != null)
+                  {
+                    'type': 'context',
+                    'elements': [
+                      {'type': 'mrkdwn', 'text': '*Latency:* ${device.lastLatency!.toStringAsFixed(1)}ms | *Packet Loss:* ${device.packetLoss?.toStringAsFixed(0)}%'}
+                    ]
+                  }
+              ]
+            }
+          ]
         };
 
       case WebhookType.discord:
         final color = isOffline ? 0xEF4444 : (isDegraded ? 0xF59E0B : 0x10B981);
         final title = isRecovery
-            ? 'RECOVERED: ${device.name} is back online'
-            : '${device.name} is ${newStatus.name.toUpperCase()}';
+            ? '✅ RECOVERED: ${device.name}'
+            : (isOffline ? '❌ OFFLINE: ${device.name}' : '⚠️ DEGRADED: ${device.name}');
         return {
           'embeds': [
             {
               'title': title,
               'color': color,
+              'description': 'Infrastructure monitoring alert from **PingIT**.',
               'fields': [
-                {'name': 'Address', 'value': device.address, 'inline': true},
-                {'name': 'Check Type', 'value': device.checkType.name.toUpperCase(), 'inline': true},
-                {'name': 'Previous Status', 'value': oldStatus.name.toUpperCase(), 'inline': true},
+                {'name': 'Address', 'value': '`${device.address}`', 'inline': true},
+                {'name': 'Method', 'value': device.checkType.name.toUpperCase(), 'inline': true},
+                {'name': 'Previous', 'value': oldStatus.name.toUpperCase(), 'inline': true},
+                if (device.lastLatency != null)
+                  {'name': 'Telemetry', 'value': '${device.lastLatency!.toStringAsFixed(1)}ms latency', 'inline': false},
               ],
-              'footer': {'text': 'PingIT Monitor'},
+              'footer': {'text': 'PingIT v1.3.2 • Network Oversight'},
               'timestamp': DateTime.now().toUtc().toIso8601String(),
             },
           ],
         };
+
+      case WebhookType.telegram:
+        // Telegram uses _buildTelegramText instead of this JSON payload
+        return {'info': 'telegram_handled_separately'};
 
       case WebhookType.generic:
         final eventType = isRecovery ? 'service_recovered' : 'status_change';

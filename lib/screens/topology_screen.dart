@@ -78,7 +78,7 @@ class _TopologyScreenState extends State<TopologyScreen>
                 );
               },
             ),
-            ...devices.map((device) => _buildDraggableNode(device, devices)),
+            ...devices.map((Device device) => _buildDraggableNode(device, devices)),
           ],
         ),
       ),

@@ -24,7 +24,10 @@ class PingService {
   void recordPollSuccess() => _consecutivePollFailures = 0;
   void recordPollFailure() => _consecutivePollFailures++;
 
-  Future<void> pingDevice(Device device, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
+  Future<void> pingDevice(Device device, {
+    Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged,
+    Function(Device, StatusHistory)? onResult,
+  }) async {
     if (device.isPaused) return;
     if (device.isInMaintenance) return;
 
@@ -53,14 +56,45 @@ class PingService {
     device.lastResponseCode = result.responseCode;
     device.lastPingTime = now;
 
-    // Store raw check result in history (not the effective device status)
-    device.history.add(StatusHistory(
+    DeviceStatus statusToRecord = result.status;
+
+    // --- Advanced Monitoring Integration ---
+    if (statusToRecord == DeviceStatus.online) {
+      // 1. Keyword Match (HTTP only)
+      if (device.checkType == CheckType.http && device.keyword != null && device.keyword!.isNotEmpty) {
+        final matches = await _checkKeywordMatch(device.address, device.keyword!);
+        if (!matches) statusToRecord = DeviceStatus.degraded;
+      }
+
+      // 2. DNS Check
+      if (device.dnsExpectedIp != null && device.dnsExpectedIp!.isNotEmpty) {
+        final dnsOk = await _checkDns(device.address, device.dnsExpectedIp!, device.dnsRecordType ?? 'A');
+        if (!dnsOk) statusToRecord = DeviceStatus.degraded;
+      }
+
+      // 3. SSL Expiry Check (HTTPS only)
+      if (device.checkType == CheckType.http && device.address.toLowerCase().startsWith('https')) {
+        final expiry = await _checkSslExpiry(device.address);
+        if (expiry != null) {
+          device.sslExpiryDate = expiry;
+          final daysLeft = expiry.difference(DateTime.now()).inDays;
+          final threshold = device.sslExpiryWarningDays ?? 14;
+          if (daysLeft <= threshold) statusToRecord = DeviceStatus.degraded;
+        }
+      }
+    }
+
+    // Store raw check result in history
+    final historyEntry = StatusHistory(
       timestamp: now,
-      status: result.status,
+      status: statusToRecord,
       latencyMs: result.latency,
       packetLoss: result.packetLoss,
       responseCode: result.responseCode,
-    ));
+    );
+    
+    device.history.add(historyEntry);
+    onResult?.call(device, historyEntry);
 
     if (device.history.length > device.maxHistory) {
       device.history.removeRange(0, device.history.length - device.maxHistory);
@@ -72,6 +106,41 @@ class PingService {
 
     if (effectiveStatus != oldStatus && onStatusChanged != null) {
       onStatusChanged(device, oldStatus, effectiveStatus);
+    }
+  }
+
+  Future<bool> _checkKeywordMatch(String address, String keyword) async {
+    try {
+      String url = address;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) url = 'http://$url';
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 5));
+      return response.body.contains(keyword);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _checkDns(String host, String expectedIp, String type) async {
+    try {
+      // Remove scheme/path for lookup
+      final cleanHost = host.replaceFirst(RegExp(r'^https?://'), '').split('/').first.split(':').first;
+      final results = await InternetAddress.lookup(cleanHost);
+      return results.any((addr) => addr.address == expectedIp);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<DateTime?> _checkSslExpiry(String address) async {
+    try {
+      final cleanHost = address.replaceFirst(RegExp(r'^https?://'), '').split('/').first.split(':').first;
+      final socket = await SecureSocket.connect(cleanHost, 443, timeout: const Duration(seconds: 5));
+      final dynamic cert = socket.peerCertificate;
+      final DateTime? expiry = cert?.end;
+      await socket.close();
+      return expiry;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -352,7 +421,10 @@ class PingService {
 
   /// Only pings devices that are due based on their interval.
   /// Limits concurrency to [_maxConcurrentChecks] to avoid resource exhaustion.
-  Future<void> pingAllDevices(List<Device> devices, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
+  Future<void> pingAllDevices(List<Device> devices, {
+    Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged,
+    Function(Device, StatusHistory)? onResult,
+  }) async {
     final now = DateTime.now();
     final due = devices.where((d) {
       if (d.isPaused) return false;
@@ -366,7 +438,11 @@ class PingService {
       // Process in batches to limit concurrent connections
       for (int i = 0; i < due.length; i += _maxConcurrentChecks) {
         final batch = due.sublist(i, (i + _maxConcurrentChecks).clamp(0, due.length));
-        await Future.wait(batch.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+        await Future.wait(batch.map((device) => pingDevice(
+          device, 
+          onStatusChanged: onStatusChanged,
+          onResult: onResult,
+        )));
       }
       recordPollSuccess();
     } catch (e) {

@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import 'package:pingit/main.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/services/email_service.dart';
+import 'package:pingit/services/report_service.dart';
 import 'package:pingit/services/storage_service.dart';
 import 'package:pingit/services/update_service.dart';
 import 'package:pingit/services/webhook_service.dart';
@@ -50,6 +51,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Webhook state
   late TextEditingController _webhookUrlController;
+  late TextEditingController _telegramTokenController;
+  late TextEditingController _telegramChatIdController;
   WebhookType _webhookType = WebhookType.generic;
   bool _webhookEnabled = false;
 
@@ -74,6 +77,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _passController = TextEditingController();
     _recipientController = TextEditingController();
     _webhookUrlController = TextEditingController();
+    _telegramTokenController = TextEditingController();
+    _telegramChatIdController = TextEditingController();
     _loadSettings();
   }
 
@@ -92,6 +97,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _webhookUrlController.text = webhook.url;
       _webhookType = webhook.type;
       _webhookEnabled = webhook.enabled;
+      _telegramTokenController.text = webhook.botToken ?? '';
+      _telegramChatIdController.text = webhook.chatId ?? '';
 
       _quietEnabled = quiet.enabled;
       _quietStart = TimeOfDay(hour: quiet.startHour, minute: quiet.startMinute);
@@ -108,6 +115,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _passController.dispose();
     _recipientController.dispose();
     _webhookUrlController.dispose();
+    _telegramTokenController.dispose();
+    _telegramChatIdController.dispose();
     super.dispose();
   }
 
@@ -127,7 +136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _saveWebhookSettings() {
     final url = _webhookUrlController.text.trim();
-    if (url.isNotEmpty) {
+    if (_webhookType != WebhookType.telegram && url.isNotEmpty) {
       final parsed = Uri.tryParse(url);
       if (parsed == null || !parsed.hasScheme || !parsed.hasAuthority) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -140,6 +149,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       url: url,
       type: _webhookType,
       enabled: _webhookEnabled,
+      botToken: _telegramTokenController.text.trim(),
+      chatId: _telegramChatIdController.text.trim(),
     );
     widget.onWebhookSettingsChanged(settings);
   }
@@ -235,6 +246,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() => _isApplyingUpdate = false);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Update failed. Please try again later.')),
+      );
+    }
+  }
+
+  Future<void> _generateHealthReport() async {
+    try {
+      final reportFile = await ReportService().generateWeeklyUptimeReport(widget.devices);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Weekly report generated: ${reportFile.path}'),
+          action: SnackBarAction(
+            label: 'Open',
+            onPressed: () => Process.run('xdg-open', [reportFile.path]),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to generate report: $e')),
       );
     }
   }
@@ -525,21 +557,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           DropdownMenuItem(value: WebhookType.generic, child: Text('Generic JSON')),
                           DropdownMenuItem(value: WebhookType.slack, child: Text('Slack')),
                           DropdownMenuItem(value: WebhookType.discord, child: Text('Discord')),
+                          DropdownMenuItem(value: WebhookType.telegram, child: Text('Telegram Bot')),
                         ],
                         onChanged: (val) {
                           setState(() => _webhookType = val!);
                           _saveWebhookSettings();
                         },
                       ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _webhookUrlController,
-                        decoration: const InputDecoration(
-                          labelText: 'Webhook URL',
-                          hintText: 'https://hooks.slack.com/services/...',
+                      const SizedBox(height: 16),
+                      if (_webhookType == WebhookType.telegram) ...[
+                        TextField(
+                          controller: _telegramTokenController,
+                          decoration: const InputDecoration(
+                            labelText: 'Telegram Bot Token',
+                            hintText: '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11',
+                          ),
+                          onChanged: (_) => _saveWebhookSettings(),
                         ),
-                        onChanged: (_) => _saveWebhookSettings(),
-                      ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: _telegramChatIdController,
+                          decoration: const InputDecoration(
+                            labelText: 'Telegram Chat ID',
+                            hintText: '-100123456789',
+                          ),
+                          onChanged: (_) => _saveWebhookSettings(),
+                        ),
+                      ] else
+                        TextField(
+                          controller: _webhookUrlController,
+                          decoration: const InputDecoration(
+                            labelText: 'Webhook URL',
+                            hintText: 'https://hooks.slack.com/services/...',
+                          ),
+                          onChanged: (_) => _saveWebhookSettings(),
+                        ),
                     ],
                   ),
                 ),
@@ -615,6 +667,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Card(
                 child: Column(
                   children: [
+                    ListTile(
+                      leading: const Icon(Icons.picture_as_pdf_outlined),
+                      title: const Text('Generate Weekly Health Report'),
+                      subtitle: const Text('Create a PDF summary of all monitored nodes'),
+                      onTap: _generateHealthReport,
+                    ),
+                    const Divider(height: 1),
                     ListTile(
                       leading: const Icon(Icons.analytics_outlined),
                       title: const Text('Generate CSV Audit'),

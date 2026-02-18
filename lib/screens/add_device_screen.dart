@@ -687,6 +687,81 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 24),
+                  _buildSectionCard(
+                    context,
+                    title: 'Advanced Monitoring',
+                    icon: Icons.security_outlined,
+                    children: [
+                      if (_selectedCheckType == CheckType.http) ...[
+                        TextFormField(
+                          initialValue: widget.device?.keyword,
+                          style: GoogleFonts.inter(),
+                          decoration: InputDecoration(
+                            labelText: 'Content Keyword Match',
+                            prefixIcon: const Icon(Icons.find_in_page_outlined),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            helperText: 'Alert if this text is missing from the response body',
+                          ),
+                          onChanged: (v) => widget.device?.keyword = v,
+                        ),
+                        const SizedBox(height: 16),
+                        TextFormField(
+                          initialValue: widget.device?.sslExpiryWarningDays?.toString() ?? '14',
+                          keyboardType: TextInputType.number,
+                          style: GoogleFonts.inter(),
+                          decoration: InputDecoration(
+                            labelText: 'SSL Expiry Warning (Days)',
+                            prefixIcon: const Icon(Icons.lock_clock_outlined),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            helperText: 'Alert when certificate has fewer than X days left',
+                          ),
+                          onChanged: (v) => widget.device?.sslExpiryWarningDays = int.tryParse(v),
+                        ),
+                        const SizedBox(height: 16),
+                      ],
+                      TextFormField(
+                        initialValue: widget.device?.dnsExpectedIp,
+                        style: GoogleFonts.inter(),
+                        decoration: InputDecoration(
+                          labelText: 'Expected DNS IP',
+                          prefixIcon: const Icon(Icons.dns_outlined),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          helperText: 'Verify that resolution matches this IP',
+                        ),
+                        onChanged: (v) => widget.device?.dnsExpectedIp = v,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  _buildSectionCard(
+                    context,
+                    title: 'Integrations',
+                    icon: Icons.integration_instructions_outlined,
+                    children: [
+                      TextFormField(
+                        initialValue: widget.device?.discordWebhookUrl,
+                        style: GoogleFonts.inter(),
+                        decoration: InputDecoration(
+                          labelText: 'Discord Webhook URL (Node Specific)',
+                          prefixIcon: const Icon(Icons.discord),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onChanged: (v) => widget.device?.discordWebhookUrl = v,
+                      ),
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        initialValue: widget.device?.slackWebhookUrl,
+                        style: GoogleFonts.inter(),
+                        decoration: InputDecoration(
+                          labelText: 'Slack Webhook URL (Node Specific)',
+                          prefixIcon: const Icon(Icons.alternate_email),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onChanged: (v) => widget.device?.slackWebhookUrl = v,
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 40),
                   FilledButton.icon(
                     onPressed: _saveDevice,
