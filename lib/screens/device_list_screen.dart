@@ -217,7 +217,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       backgroundColor: isDark ? const Color(0xFF020617) : Colors.grey.shade50,
       appBar: AppBar(
         title: Text(
-          'PingIT Overview',
+          'Infrastructure Explorer',
           style: GoogleFonts.inter(
             fontWeight: FontWeight.w800,
             letterSpacing: -0.5,
@@ -307,17 +307,11 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
           ? const Center(child: CircularProgressIndicator())
           : CustomScrollView(
               slivers: [
-                SliverToBoxAdapter(
-                  child: _buildDashboardHUD(context)
-                      .animate()
-                      .fade(duration: 500.ms)
-                      .slideY(begin: -0.2, end: 0),
-                ),
                 // Status filter chip
                 if (widget.statusFilter != null)
                   SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
                       child: Row(
                         children: [
                           Chip(
@@ -352,7 +346,6 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
                       if (widget.devices.isEmpty)
                         _buildEmptyState(context)
                       else ...[
-                        _buildPinnedSection(context),
                         ...widget.groups.map((g) => _buildGroup(context, g)),
                         _buildGroup(context, null),
                       ],

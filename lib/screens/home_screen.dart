@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/providers/device_provider.dart';
+import 'package:pingit/screens/dashboard_screen.dart';
 import 'package:pingit/screens/add_device_screen.dart';
 import 'package:pingit/screens/device_details_screen.dart';
 import 'package:pingit/screens/device_list_screen.dart';
@@ -46,7 +47,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       provider.stopPolling();
-      provider.saveAll(immediate: true);
+      // provider.saveAll(immediate: true); // DB handles persistence now
     }
   }
 
@@ -93,12 +94,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       // Clone result — add as new device
       provider.addDevice(result);
     } else {
-      // Just save in case details changed (mutated in place)
-      // Ideally we shouldn't mutate in place, but if we did:
-      provider.saveAll();
-      // Force rebuild? Provider might not know internal object changed if we don't call notifyListeners.
-      // But DeviceDetailsScreen usually modifies the object. 
-      // We should probably call a method on provider like 'refresh()' or 'updateDevice' even if same object.
+      // provider.saveAll(); // DB handles persistence now
       provider.updateDevice(device); 
     }
   }
@@ -238,22 +234,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 onDestinationSelected: (index) =>
                     setState(() => _selectedIndex = index),
                 labelType: NavigationRailLabelType.selected,
-                leading: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 24),
-                  child:
-                      Icon(
-                            Icons.shield_outlined,
-                            color: Theme.of(context).colorScheme.primary,
-                            size: 28,
-                          )
-                          .animate(onPlay: (c) => c.repeat(reverse: true))
-                          .scaleXY(end: 1.1, duration: 2.seconds),
-                ),
                 destinations: const [
+                  NavigationRailDestination(
+                    icon: Icon(Icons.dashboard_outlined),
+                    selectedIcon: Icon(Icons.dashboard),
+                    label: Text('Dashboard'),
+                  ),
                   NavigationRailDestination(
                     icon: Icon(Icons.grid_view_outlined),
                     selectedIcon: Icon(Icons.grid_view),
-                    label: Text('Dashboard'),
+                    label: Text('Infrastructure'),
                   ),
                   NavigationRailDestination(
                     icon: Icon(Icons.hub_outlined),
@@ -287,9 +277,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         actions: [
                           TextButton(
                             onPressed: () {
-                               setState(() => _selectedIndex = 3);
-                               // Ideally we don't dismiss, just nav to settings
-                               // But maybe user wants to dismiss banner?
+                               setState(() => _selectedIndex = 4); // Settings is now index 4
                                provider.dismissUpdateBanner();
                             },
                             child: const Text('VIEW'),
@@ -304,6 +292,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       child: IndexedStack(
                         index: _selectedIndex,
                         children: [
+                          const DashboardScreen(),
                           DeviceListScreen(
                             devices: provider.devices,
                             groups: provider.groups,

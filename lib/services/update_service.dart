@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 class UpdateService {
   static const String githubOwner = 'cbl508';
   static const String githubRepo = 'PingIT';
-  static const String currentVersion = '1.3.2';
+  static const String currentVersion = '1.3.3';
 
   /// Check GitHub Releases API for a newer version.
   Future<UpdateInfo?> checkForUpdate() async {

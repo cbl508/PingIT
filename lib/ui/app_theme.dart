@@ -5,7 +5,7 @@ class AppTheme {
   static ThemeData build(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
     final colorScheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF3B82F6),
+      seedColor: isDark ? const Color(0xFF6366F1) : const Color(0xFF3B82F6),
       brightness: brightness,
       surface: isDark ? const Color(0xFF020617) : const Color(0xFFF8FAFC),
       surfaceContainer: isDark ? const Color(0xFF0F172A) : Colors.white,
@@ -76,21 +76,21 @@ class AppTheme {
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
         elevation: 0,
-        indicatorColor: colorScheme.primaryContainer,
+        indicatorColor: isDark ? colorScheme.primary.withValues(alpha: 0.2) : colorScheme.primaryContainer,
         labelTextStyle: WidgetStatePropertyAll(
           GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 12),
         ),
       ),
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: isDark ? const Color(0xFF020617) : Colors.white,
-        indicatorColor: colorScheme.primaryContainer,
-        selectedIconTheme: IconThemeData(color: colorScheme.onPrimaryContainer),
+        indicatorColor: isDark ? colorScheme.primary.withValues(alpha: 0.2) : colorScheme.primaryContainer,
+        selectedIconTheme: IconThemeData(color: isDark ? colorScheme.primary : colorScheme.onPrimaryContainer),
         unselectedIconTheme: IconThemeData(color: colorScheme.onSurfaceVariant),
         labelType: NavigationRailLabelType.all,
         selectedLabelTextStyle: GoogleFonts.inter(
           fontWeight: FontWeight.w600,
           fontSize: 12,
-          color: colorScheme.onSurface,
+          color: isDark ? colorScheme.primary : colorScheme.onSurface,
         ),
         unselectedLabelTextStyle: GoogleFonts.inter(
           fontWeight: FontWeight.w500,
@@ -100,8 +100,8 @@ class AppTheme {
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          foregroundColor: Colors.white,
-          backgroundColor: colorScheme.primary,
+          foregroundColor: isDark ? colorScheme.onPrimary : Colors.white,
+          backgroundColor: isDark ? colorScheme.primary.withValues(alpha: 0.8) : colorScheme.primary,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -114,6 +114,7 @@ class AppTheme {
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
+          foregroundColor: isDark ? colorScheme.primary.withValues(alpha: 0.9) : colorScheme.primary,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
           ),
