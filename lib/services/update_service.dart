@@ -121,7 +121,7 @@ class UpdateService {
     }
   }
 
-  /// Launch the platform updater script and immediately exit the app.
+  /// Launch the platform updater script and exit the app.
   /// The script waits for this process to exit, copies files, and restarts.
   Future<void> launchUpdaterAndExit(StagedUpdate staged) async {
     if (Platform.isWindows) {
@@ -129,6 +129,8 @@ class UpdateService {
     } else {
       await _launchUnixUpdater(staged);
     }
+    // Brief delay so the UpdatingScreen is visible before the app exits.
+    await Future.delayed(const Duration(seconds: 2));
     exit(0);
   }
 
@@ -143,6 +145,12 @@ class UpdateService {
 \$ErrorActionPreference = 'SilentlyContinue'
 try { Wait-Process -Id $currentPid -Timeout 60 } catch {}
 Start-Sleep -Seconds 2
+
+[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+\$notify = New-Object System.Windows.Forms.NotifyIcon
+\$notify.Icon = [System.Drawing.SystemIcons]::Information
+\$notify.Visible = \$true
+\$notify.ShowBalloonTip(10000, 'PingIT', 'Installing update — restarting shortly...', 'Info')
 
 \$src = "$ePath\\*"
 \$dst = "$aPath\\"
@@ -167,6 +175,8 @@ if (-not \$ok) {
     exit
 }
 
+\$notify.Visible = \$false
+\$notify.Dispose()
 Start-Process "$aPath\\pingit.exe"
 Start-Sleep -Seconds 1
 Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
@@ -194,6 +204,7 @@ Remove-Item -Path \$MyInvocation.MyCommand.Source -Force
         '  sleep 1\n'
         'done\n'
         'sleep 1\n'
+        'notify-send -a PingIT "PingIT" "Installing update — restarting shortly..." 2>/dev/null\n'
         '\n'
         'if cp -rf "$extractDir/"* "$appDir/" 2>/dev/null; then\n'
         '  chmod +x "$appDir/pingit"\n'

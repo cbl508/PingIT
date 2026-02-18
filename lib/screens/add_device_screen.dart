@@ -4,6 +4,26 @@ import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/services/ping_service.dart';
 
+class _Preset {
+  final String name;
+  final String address;
+  final CheckType checkType;
+  final DeviceType deviceType;
+
+  const _Preset(this.name, this.address, this.checkType, this.deviceType);
+}
+
+const _presets = <_Preset>[
+  _Preset('Cloudflare DNS', '1.1.1.1', CheckType.icmp, DeviceType.cloud),
+  _Preset('Google DNS', '8.8.8.8', CheckType.icmp, DeviceType.cloud),
+  _Preset('Quad9 DNS', '9.9.9.9', CheckType.icmp, DeviceType.cloud),
+  _Preset('OpenDNS', '208.67.222.222', CheckType.icmp, DeviceType.cloud),
+  _Preset('Google.com', 'google.com', CheckType.http, DeviceType.website),
+  _Preset('Cloudflare.com', 'cloudflare.com', CheckType.http, DeviceType.website),
+  _Preset('GitHub', 'github.com', CheckType.http, DeviceType.website),
+  _Preset('AWS EC2 (us-east-1)', 'ec2.us-east-1.amazonaws.com', CheckType.http, DeviceType.cloud),
+];
+
 class AddDeviceScreen extends StatefulWidget {
   const AddDeviceScreen({
     super.key,
@@ -35,6 +55,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   late DeviceType _selectedType;
   late CheckType _selectedCheckType;
   DateTime? _maintenanceUntil;
+  _Preset? _selectedPreset;
   
   // Connection Testing State
   bool _isTesting = false;
@@ -268,6 +289,59 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     title: 'Basic Information',
                     icon: Icons.info_outline,
                     children: [
+                      if (!isEditing) ...[
+                        DropdownButtonFormField<_Preset?>(
+                          initialValue: _selectedPreset,
+                          style: GoogleFonts.inter(
+                            color: Theme.of(context).textTheme.bodyMedium?.color,
+                          ),
+                          decoration: InputDecoration(
+                            prefixIcon: const Icon(Icons.playlist_add_check_outlined),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            labelText: 'Preconfigured',
+                          ),
+                          items: [
+                            DropdownMenuItem<_Preset?>(
+                              value: null,
+                              child: Text('Custom (Manual Entry)',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 13,
+                                    color: Colors.grey,
+                                  )),
+                            ),
+                            ..._presets.map(
+                              (p) => DropdownMenuItem<_Preset?>(
+                                value: p,
+                                child: Text(p.name,
+                                    style: GoogleFonts.inter(fontSize: 13)),
+                              ),
+                            ),
+                          ],
+                          onChanged: (preset) {
+                            setState(() {
+                              _selectedPreset = preset;
+                              if (preset != null) {
+                                _nameController.text = preset.name;
+                                _addressController.text = preset.address;
+                                _selectedCheckType = preset.checkType;
+                                _selectedType = preset.deviceType;
+                                _portController.text = '80';
+                              } else {
+                                _nameController.clear();
+                                _addressController.clear();
+                                _selectedCheckType = CheckType.icmp;
+                                _selectedType = DeviceType.server;
+                                _portController.text = '80';
+                              }
+                              _testResult = null;
+                              _testStatusColor = null;
+                            });
+                          },
+                        ),
+                        const SizedBox(height: 16),
+                      ],
                       _buildField(
                         _nameController,
                         'Display Name',

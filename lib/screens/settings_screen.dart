@@ -15,6 +15,7 @@ import 'package:pingit/services/email_service.dart';
 import 'package:pingit/services/storage_service.dart';
 import 'package:pingit/services/update_service.dart';
 import 'package:pingit/services/webhook_service.dart';
+import 'package:pingit/screens/updating_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -186,10 +187,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         barrierDismissible: false,
         builder: (dialogContext) {
           final isDark = Theme.of(dialogContext).brightness == Brightness.dark;
+          void restartNow() {
+            Navigator.of(dialogContext).pop();
+            Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(
+                builder: (_) => UpdatingScreen(version: _updateInfo!.version),
+              ),
+              (_) => false,
+            );
+            UpdateService().launchUpdaterAndExit(staged);
+          }
+
           return CallbackShortcuts(
             bindings: {
-              const SingleActivator(LogicalKeyboardKey.enter): () =>
-                  UpdateService().launchUpdaterAndExit(staged),
+              const SingleActivator(LogicalKeyboardKey.enter): restartNow,
             },
             child: Focus(
               autofocus: true,
@@ -207,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(width: 8),
                   ElevatedButton(
-                    onPressed: () => UpdateService().launchUpdaterAndExit(staged),
+                    onPressed: restartNow,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF10B981),
                       foregroundColor: Colors.white,
