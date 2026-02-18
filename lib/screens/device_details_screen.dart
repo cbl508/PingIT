@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/screens/add_device_screen.dart';
 import 'package:pingit/widgets/scan_dialog.dart';
+import 'package:dart_ping/dart_ping.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:intl/intl.dart';
 
@@ -31,35 +32,56 @@ class DeviceDetailsScreen extends StatefulWidget {
 class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
   Timer? _refreshTimer;
   final ScrollController _chartScrollController = ScrollController();
+  final ScrollController _consoleScrollController = ScrollController();
   int _lastHistoryLength = 0;
+
+  // ── Manual ping state ──
+  bool _isPinging = false;
+  final List<_PingResult> _pingResults = [];
+  Ping? _activePing;
+  StreamSubscription? _pingSubscription;
+  Process? _pingProcess;
+  StreamSubscription? _pingStdoutSub;
 
   @override
   void initState() {
     super.initState();
     _lastHistoryLength = widget.device.history.length;
-    // Refresh every 5 seconds — only rebuild if history actually changed.
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (mounted && widget.device.history.length != _lastHistoryLength) {
         _lastHistoryLength = widget.device.history.length;
         setState(() {});
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _scrollToEnd(_chartScrollController, animate: true);
+        });
       }
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_chartScrollController.hasClients) {
-        _chartScrollController.jumpTo(
-          _chartScrollController.position.maxScrollExtent,
-        );
-      }
+      _scrollToEnd(_chartScrollController);
     });
+  }
+
+  void _scrollToEnd(ScrollController c, {bool animate = false}) {
+    if (!c.hasClients) return;
+    if (animate) {
+      c.animateTo(c.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    } else {
+      c.jumpTo(c.position.maxScrollExtent);
+    }
   }
 
   @override
   void dispose() {
     _refreshTimer?.cancel();
     _chartScrollController.dispose();
+    _consoleScrollController.dispose();
+    _stopPing(silent: true);
     super.dispose();
   }
+
+  // ───────────────────────── Actions ─────────────────────────
 
   void _editDevice() async {
     final result = await Navigator.push(
@@ -118,6 +140,95 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
         }
       },
     );
+  }
+
+  // ── Manual ping controls ──
+
+  void _clearConsole() {
+    setState(() => _pingResults.clear());
+  }
+
+  void _startPing() {
+    setState(() => _isPinging = true);
+
+    if (Platform.isWindows) {
+      _startPingWindows();
+    } else {
+      _startPingNative();
+    }
+  }
+
+  void _startPingNative() {
+    int seq = 0;
+    _activePing = Ping(widget.device.address, count: 99999, timeout: 2);
+    _pingSubscription = _activePing!.stream.listen(
+      (event) {
+        if (!_isPinging || !mounted) return;
+        if (event.summary != null) return;
+        seq++;
+        final time = event.response?.time;
+        _addPingResult(seq, time != null ? time.inMicroseconds / 1000.0 : null);
+      },
+      onDone: () {
+        if (mounted && _isPinging) setState(() => _isPinging = false);
+      },
+      onError: (_) {
+        if (mounted && _isPinging) setState(() => _isPinging = false);
+      },
+    );
+  }
+
+  void _startPingWindows() async {
+    int seq = 0;
+    final latencyRegex = RegExp(r'[=<]\s*(\d+)\s*ms', caseSensitive: false);
+    try {
+      _pingProcess = await Process.start('ping', ['-t', '-w', '2000', widget.device.address]);
+      _pingStdoutSub = _pingProcess!.stdout
+          .transform(const Utf8Decoder(allowMalformed: true))
+          .transform(const LineSplitter())
+          .listen((line) {
+        if (!_isPinging || !mounted) return;
+        final upper = line.toUpperCase();
+        if (upper.contains('TTL')) {
+          seq++;
+          final match = latencyRegex.firstMatch(line);
+          _addPingResult(seq, match != null ? double.parse(match.group(1)!) : null);
+        } else if (upper.contains('TIMED OUT') ||
+            upper.contains('UNREACHABLE') ||
+            upper.contains('GENERAL FAILURE')) {
+          seq++;
+          _addPingResult(seq, null);
+        }
+      });
+      _pingProcess!.exitCode.then((_) {
+        if (mounted && _isPinging) setState(() => _isPinging = false);
+      });
+    } catch (_) {
+      if (mounted) setState(() => _isPinging = false);
+    }
+  }
+
+  void _stopPing({bool silent = false}) {
+    _activePing?.stop();
+    _pingSubscription?.cancel();
+    _pingProcess?.kill();
+    _pingStdoutSub?.cancel();
+    _activePing = null;
+    _pingSubscription = null;
+    _pingProcess = null;
+    _pingStdoutSub = null;
+    _isPinging = false;
+    if (!silent && mounted) setState(() {});
+  }
+
+  void _addPingResult(int seq, double? latencyMs) {
+    if (!mounted) return;
+    setState(() {
+      _pingResults.add(_PingResult(seq: seq, latencyMs: latencyMs, timestamp: DateTime.now()));
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToEnd(_consoleScrollController, animate: true);
+    });
   }
 
   Future<void> _runTraceroute() async {
@@ -241,6 +352,8 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     scrollController.dispose();
   }
 
+  // ───────────────────────── Build ─────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -255,6 +368,17 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
             Icon(widget.device.typeIcon, size: 20, color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 12),
             Text(widget.device.name, style: GoogleFonts.inter(fontWeight: FontWeight.w800, letterSpacing: -0.5)),
+            const SizedBox(width: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(widget.device.address,
+                  style: GoogleFonts.jetBrainsMono(fontSize: 12, fontWeight: FontWeight.w600,
+                      color: Theme.of(context).colorScheme.primary)),
+            ),
           ],
         ),
         actions: [
@@ -266,276 +390,171 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(20),
         child: Column(
           children: [
-            _buildStabilityHeader(context, widget.device.stabilityScore)
-                .animate().fade().slideY(begin: 0.1, end: 0),
-            const SizedBox(height: 24),
-            _buildSLACard(context, sla),
-            const SizedBox(height: 24),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: Column(
-                    children: [
-                      _buildHeatmap(context),
-                      const SizedBox(height: 24),
-                      RepaintBoundary(child: _buildChartSection(context, stats)),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 24),
-                Expanded(
-                  flex: 2,
-                  child: Column(
-                    children: [
-                      _buildStatsGrid(context, stats),
-                      const SizedBox(height: 24),
-                      _buildActivitySection(context),
-                      if (widget.device.lastScanResult != null) ...[
-                        const SizedBox(height: 24),
-                        _buildScanResultSection(context),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
+            // ── Row 1: compact status bar ──
+            _buildStatusBar(context, stats, sla)
+                .animate().fade().slideY(begin: 0.05, end: 0),
+            const SizedBox(height: 16),
+            // ── Row 2: heatmap ──
+            _buildHeatmap(context),
+            const SizedBox(height: 16),
+            // ── Row 3: chart + console ──
+            SizedBox(
+              height: 520,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: RepaintBoundary(child: _buildChartSection(context, stats))),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildConsole(context)),
+                ],
+              ),
             ),
+            const SizedBox(height: 16),
+            // ── Row 4: SLA detail bar ──
+            _buildSLABar(context, sla),
+            // ── Row 5: scan results ──
+            if (widget.device.lastScanResult != null) ...[
+              const SizedBox(height: 16),
+              _buildScanResultSection(context),
+            ],
           ],
         ),
       ),
     );
   }
 
-  // --- SLA Calculation ---
+  // ───────────────────── Status bar ─────────────────────
 
-  _SLAData _calculateSLA() {
-    final history = widget.device.history;
-    if (history.isEmpty) return _SLAData(100, 100, 100, 100, 100, 100, Duration.zero);
-
-    final now = DateTime.now();
-    final last24h = history.where((h) => now.difference(h.timestamp).inHours < 24).toList();
-    final last7d = history.where((h) => now.difference(h.timestamp).inDays < 7).toList();
-    final last30d = history.where((h) => now.difference(h.timestamp).inDays < 30).toList();
-
-    // Available = not offline (includes online + degraded)
-    double available(List<StatusHistory> h) {
-      if (h.isEmpty) return 100.0;
-      final up = h.where((e) => e.status != DeviceStatus.offline).length;
-      return (up / h.length) * 100;
-    }
-
-    // Perfect = strictly online only
-    double perfect(List<StatusHistory> h) {
-      if (h.isEmpty) return 100.0;
-      final online = h.where((e) => e.status == DeviceStatus.online).length;
-      return (online / h.length) * 100;
-    }
-
-    // Calculate total downtime from consecutive offline entries
-    Duration totalDowntime = Duration.zero;
-    DateTime? downStart;
-    for (var h in history) {
-      if (h.status == DeviceStatus.offline) {
-        downStart ??= h.timestamp;
-      } else if (downStart != null) {
-        totalDowntime += h.timestamp.difference(downStart);
-        downStart = null;
-      }
-    }
-    if (downStart != null) {
-      totalDowntime += now.difference(downStart);
-    }
-
-    return _SLAData(
-      available(last24h), available(last7d), available(last30d),
-      perfect(last24h), perfect(last7d), perfect(last30d),
-      totalDowntime,
-    );
-  }
-
-  Widget _buildSLACard(BuildContext context, _SLAData sla) {
+  Widget _buildStatusBar(BuildContext context, _DeviceStats stats, _SLAData sla) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final score = widget.device.stabilityScore;
+    final scoreColor = score >= 90
+        ? const Color(0xFF10B981)
+        : (score >= 70 ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
+
+    Color statusColor;
+    String statusLabel;
+    switch (widget.device.status) {
+      case DeviceStatus.online:
+        statusColor = const Color(0xFF10B981);
+        statusLabel = 'ONLINE';
+      case DeviceStatus.offline:
+        statusColor = const Color(0xFFEF4444);
+        statusLabel = 'OFFLINE';
+      case DeviceStatus.degraded:
+        statusColor = const Color(0xFFF59E0B);
+        statusLabel = 'DEGRADED';
+      case DeviceStatus.unknown:
+        statusColor = Colors.grey;
+        statusLabel = 'UNKNOWN';
+    }
+
+    Widget divider() => Container(
+          width: 1,
+          height: 36,
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.grey.withValues(alpha: 0.12),
+        );
+
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       decoration: BoxDecoration(
         color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
-        ),
+          color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Text('UPTIME / SLA',
-              style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w800,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 1)),
-          const SizedBox(height: 16),
-          Text('AVAILABLE (non-offline)',
-              style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _buildSLAMetric(context, '24h', sla.avail24h),
-              const SizedBox(width: 16),
-              _buildSLAMetric(context, '7 days', sla.avail7d),
-              const SizedBox(width: 16),
-              _buildSLAMetric(context, '30 days', sla.avail30d),
-              const SizedBox(width: 24),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('TOTAL DOWNTIME',
-                        style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
-                    const SizedBox(height: 4),
-                    Text(_formatDuration(sla.totalDowntime),
-                        style: GoogleFonts.jetBrainsMono(fontSize: 18, fontWeight: FontWeight.w700,
-                            color: sla.totalDowntime.inMinutes > 0 ? const Color(0xFFEF4444) : const Color(0xFF10B981))),
-                  ],
+          // Score ring
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: score / 100,
+                  strokeWidth: 4.5,
+                  backgroundColor: scoreColor.withValues(alpha: 0.12),
+                  color: scoreColor,
+                  strokeCap: StrokeCap.round,
                 ),
-              ),
-            ],
+                Text(score.toStringAsFixed(0),
+                    style: GoogleFonts.jetBrainsMono(
+                        fontSize: 15, fontWeight: FontWeight.w900, color: scoreColor)),
+              ],
+            ),
           ),
-          const SizedBox(height: 16),
-          Text('PERFECT UPTIME (online only)',
-              style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              _buildSLAMetric(context, '24h', sla.perfect24h),
-              const SizedBox(width: 16),
-              _buildSLAMetric(context, '7 days', sla.perfect7d),
-              const SizedBox(width: 16),
-              _buildSLAMetric(context, '30 days', sla.perfect30d),
-            ],
+          divider(),
+          // Key metrics
+          _buildMetric('AVG LATENCY', '${stats.avgLatency.toStringAsFixed(1)}ms', context),
+          const SizedBox(width: 24),
+          _buildMetric('PACKET LOSS', '${stats.avgLoss.toStringAsFixed(0)}%', context,
+              valueColor: stats.avgLoss > 5 ? const Color(0xFFEF4444) : null),
+          const SizedBox(width: 24),
+          _buildMetric('PEAK', '${stats.maxLatency.toStringAsFixed(1)}ms', context),
+          const SizedBox(width: 24),
+          _buildMetric('SAMPLES', '${widget.device.history.length}', context),
+          divider(),
+          _buildMetric('UPTIME 24H', '${sla.perfect24h.toStringAsFixed(1)}%', context,
+              valueColor: sla.perfect24h < 99 ? const Color(0xFFEF4444) : null),
+          const SizedBox(width: 24),
+          _buildMetric('DOWNTIME', _formatDuration(sla.totalDowntime), context,
+              valueColor: sla.totalDowntime.inMinutes > 0 ? const Color(0xFFEF4444) : null),
+          const Spacer(),
+          // Status badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: statusColor.withValues(alpha: 0.25)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle)),
+                const SizedBox(width: 8),
+                Text(statusLabel,
+                    style: GoogleFonts.inter(
+                        fontSize: 11, fontWeight: FontWeight.w800, color: statusColor, letterSpacing: 0.5)),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSLAMetric(BuildContext context, String label, double uptime) {
-    Color color = uptime >= 99.9 ? const Color(0xFF10B981) : (uptime >= 99 ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
+  Widget _buildMetric(String label, String value, BuildContext context, {Color? valueColor}) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('${uptime.toStringAsFixed(2)}%',
-            style: GoogleFonts.jetBrainsMono(fontSize: 20, fontWeight: FontWeight.w700, color: color)),
+        Text(value,
+            style: GoogleFonts.jetBrainsMono(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: valueColor ?? Theme.of(context).colorScheme.onSurface)),
         const SizedBox(height: 2),
-        Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600,
-            color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        Text(label,
+            style: GoogleFonts.inter(
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                letterSpacing: 0.5)),
       ],
     );
   }
 
-  String _formatDuration(Duration d) {
-    if (d.inDays > 0) return '${d.inDays}d ${d.inHours % 24}h ${d.inMinutes % 60}m';
-    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
-    if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
-    return '${d.inSeconds}s';
-  }
-
-  // --- Existing UI builders ---
-
-  Widget _buildScanResultSection(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF0F172A) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(children: [
-            Text('LAST DEEP SCAN REPORT', style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 11, color: Colors.grey, letterSpacing: 1)),
-            const Spacer(),
-            const Icon(Icons.history, size: 14, color: Colors.grey),
-          ]),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(16),
-            width: double.infinity,
-            decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.3), borderRadius: BorderRadius.circular(8)),
-            child: Text(widget.device.lastScanResult!,
-                style: GoogleFonts.jetBrainsMono(fontSize: 11, color: const Color(0xFF34D399), height: 1.5)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildHeaderAction(String label, IconData icon, VoidCallback onTap) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 8),
-      child: TextButton.icon(
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(label, style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-        style: TextButton.styleFrom(
-          foregroundColor: Theme.of(context).colorScheme.primary,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStabilityHeader(BuildContext context, double score) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    Color scoreColor = score >= 90 ? const Color(0xFF10B981) : (score >= 70 ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(32),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 20, offset: const Offset(0, 10))],
-      ),
-      child: Column(
-        children: [
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              SizedBox(
-                width: 120, height: 120,
-                child: CircularProgressIndicator(
-                  value: score / 100, strokeWidth: 12,
-                  backgroundColor: scoreColor.withValues(alpha: 0.1), color: scoreColor, strokeCap: StrokeCap.round,
-                ),
-              ),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(score.toStringAsFixed(0),
-                      style: GoogleFonts.jetBrainsMono(fontSize: 36, fontWeight: FontWeight.w900, color: scoreColor, letterSpacing: -1)),
-                  Text('%', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Text('RELIABILITY SCORE',
-              style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w800, color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 1.5)),
-          const SizedBox(height: 8),
-          Text('70% uptime + 30% packet loss reliability',
-              style: GoogleFonts.inter(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-        ],
-      ),
-    );
-  }
+  // ───────────────────── Heatmap ─────────────────────
 
   Widget _buildHeatmap(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -543,116 +562,168 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
         ? widget.device.history.sublist(widget.device.history.length - 60)
         : widget.device.history;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('STATUS HISTORY (LAST 60 TICKS)',
-            style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 11,
-                color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 1)),
-        const SizedBox(height: 16),
-        Container(
-          height: 48,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            color: Theme.of(context).cardTheme.color,
-            border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
-          ),
-          child: Row(
-            children: history.isEmpty
-                ? [Expanded(child: Center(child: Text('Awaiting data stream...', style: GoogleFonts.inter(fontSize: 11, color: Theme.of(context).disabledColor))))]
-                : history.map((h) {
-                    Color color = h.status == DeviceStatus.offline
-                        ? const Color(0xFFEF4444)
-                        : ((h.latencyMs ?? 0) > 200 ? const Color(0xFFF59E0B) : const Color(0xFF10B981));
-                    return Expanded(
-                      child: Tooltip(
-                        message: '${DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp)}\n${h.status.name.toUpperCase()} - ${h.latencyMs?.toStringAsFixed(1) ?? 0}ms',
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 1),
-                          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
-                        ),
-                      ),
-                    );
-                  }).toList(),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatsGrid(BuildContext context, _DeviceStats stats) {
-    return Column(
-      children: [
-        Row(children: [
-          Expanded(child: _buildStatCard('LATENCY (AVG)', '${stats.avgLatency.toStringAsFixed(1)}ms', Icons.speed)),
-          const SizedBox(width: 16),
-          Expanded(child: _buildStatCard('PACKET LOSS', '${stats.avgLoss.toStringAsFixed(0)}%', Icons.leak_add)),
-        ]),
-        const SizedBox(height: 16),
-        Row(children: [
-          Expanded(child: _buildStatCard('PEAK JITTER', '${stats.maxLatency.toStringAsFixed(1)}ms', Icons.trending_up)),
-          const SizedBox(width: 16),
-          Expanded(child: _buildStatCard('SAMPLE COUNT', '${widget.device.history.length}', Icons.data_usage)),
-        ]),
-      ],
-    );
-  }
-
-  Widget _buildStatCard(String label, String value, IconData icon) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final color = Theme.of(context).colorScheme.primary;
-
     return Container(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
         color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
+        border: Border.all(
+            color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-            child: Icon(icon, size: 20, color: color),
+          Text('STATUS HISTORY (LAST 60 TICKS)',
+              style: GoogleFonts.inter(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 10,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  letterSpacing: 1)),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 22,
+            child: Row(
+              children: history.isEmpty
+                  ? [
+                      Expanded(
+                          child: Center(
+                              child: Text('Awaiting data...',
+                                  style: GoogleFonts.inter(
+                                      fontSize: 10, color: Theme.of(context).disabledColor))))
+                    ]
+                  : history.map((h) {
+                      Color color;
+                      final hasResponse = h.latencyMs != null && h.latencyMs! > 0;
+                      if (!hasResponse || h.status == DeviceStatus.offline) {
+                        color = const Color(0xFFEF4444);
+                      } else if (h.status == DeviceStatus.degraded || h.latencyMs! > 200) {
+                        color = const Color(0xFFF59E0B);
+                      } else {
+                        color = const Color(0xFF10B981);
+                      }
+                      final latencyStr = hasResponse ? '${h.latencyMs!.toStringAsFixed(1)}ms' : '---';
+                      return Expanded(
+                        child: Tooltip(
+                          message:
+                              '${DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp)}\n${hasResponse ? h.status.name.toUpperCase() : 'OFFLINE'} — $latencyStr',
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 1),
+                            decoration:
+                                BoxDecoration(color: color, borderRadius: BorderRadius.circular(3)),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+            ),
           ),
-          const SizedBox(height: 16),
-          Text(value, style: GoogleFonts.jetBrainsMono(fontSize: 24, fontWeight: FontWeight.w700, letterSpacing: -0.5, color: Theme.of(context).colorScheme.onSurface)),
-          const SizedBox(height: 4),
-          Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 0.5)),
         ],
       ),
     );
   }
 
+  // ───────────────────── Chart ─────────────────────
+
+  static const _kOnline = Color(0xFF10B981);
+  static const _kDegraded = Color(0xFFF59E0B);
+  static const _kOffline = Color(0xFFEF4444);
+
+  Color _statusColor(DeviceStatus status) {
+    switch (status) {
+      case DeviceStatus.online:
+        return _kOnline;
+      case DeviceStatus.degraded:
+        return _kDegraded;
+      case DeviceStatus.offline:
+        return _kOffline;
+      default:
+        return const Color(0xFF64748B);
+    }
+  }
+
+  Widget _legendDot(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: GoogleFonts.inter(fontSize: 9, color: Colors.grey)),
+      ],
+    );
+  }
+
+  Widget _legendDash(Color color, String label) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 14, height: 1.5, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: GoogleFonts.inter(fontSize: 9, color: Colors.grey)),
+      ],
+    );
+  }
+
   Widget _buildChartSection(BuildContext context, _DeviceStats stats) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final spots = _getSpots();
-    final double dynamicWidth = max(600.0, widget.device.history.length * 30.0);
+    final history = widget.device.history;
+    final double dynamicWidth = max(600.0, history.length * 24.0);
 
-    double yInterval = 1.0;
-    if (stats.maxLatency > 0) {
-      yInterval = (stats.maxLatency / 5).clamp(0.1, double.infinity);
-      if (yInterval > 1) yInterval = yInterval.roundToDouble();
-    }
+    final yInterval = _niceInterval(stats.maxLatency, 5);
+    final chartMaxY = stats.maxLatency > 0
+        ? ((stats.maxLatency / yInterval).ceil() + 1) * yInterval
+        : 1.0;
+
+    // Single line — real latency for online/degraded, 0 for offline.
+    // No NaN anywhere — eliminates fl_chart NaN crashes in gradient/tooltip.
+    final spots = List.generate(history.length, (i) {
+      final latency = history[i].latencyMs;
+      return FlSpot(i.toDouble(), (latency != null && latency > 0) ? latency : 0.0);
+    });
+
+    final gridColor = isDark
+        ? Colors.white.withValues(alpha: 0.04)
+        : Colors.black.withValues(alpha: 0.04);
+    final borderColor = isDark
+        ? Colors.white.withValues(alpha: 0.08)
+        : Colors.black.withValues(alpha: 0.08);
+    final avgLineColor = isDark ? Colors.white38 : Colors.black26;
 
     return Container(
-      height: 500,
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+            color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('LATENCY DISTRIBUTION',
-              style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 11,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant, letterSpacing: 1)),
-          const SizedBox(height: 24),
+          // Header with title + legend
+          Row(
+            children: [
+              Text('LATENCY DISTRIBUTION (ms)',
+                  style: GoogleFonts.inter(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 10,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      letterSpacing: 1)),
+              const Spacer(),
+              _legendDot(_kOnline, 'Online'),
+              const SizedBox(width: 10),
+              _legendDot(_kDegraded, 'Degraded'),
+              const SizedBox(width: 10),
+              _legendDot(_kOffline, 'Offline'),
+              if (stats.avgLatency > 0) ...[
+                const SizedBox(width: 10),
+                _legendDash(avgLineColor, 'Avg ${stats.avgLatency.toStringAsFixed(1)}ms'),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
           Expanded(
             child: Scrollbar(
               controller: _chartScrollController,
@@ -663,35 +734,63 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                 child: SizedBox(
                   width: dynamicWidth,
                   child: Padding(
-                    padding: const EdgeInsets.only(right: 40, bottom: 4),
+                    padding: const EdgeInsets.only(right: 30, bottom: 4),
                     child: LineChart(
                       LineChartData(
                         minY: 0,
-                        maxY: stats.maxLatency * 1.2 + 1,
+                        maxY: chartMaxY,
                         clipData: const FlClipData.all(),
                         gridData: FlGridData(
-                          show: true, drawVerticalLine: false,
-                          getDrawingHorizontalLine: (v) => FlLine(
-                            color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.05), strokeWidth: 1),
+                          show: true,
+                          drawVerticalLine: false,
+                          horizontalInterval: yInterval,
+                          getDrawingHorizontalLine: (v) =>
+                              FlLine(color: gridColor, strokeWidth: 1),
+                        ),
+                        extraLinesData: ExtraLinesData(
+                          horizontalLines: [
+                            if (stats.avgLatency > 0)
+                              HorizontalLine(
+                                y: stats.avgLatency,
+                                color: avgLineColor,
+                                strokeWidth: 1,
+                                dashArray: [6, 4],
+                                label: HorizontalLineLabel(
+                                  show: true,
+                                  alignment: Alignment.topRight,
+                                  style: GoogleFonts.jetBrainsMono(
+                                    fontSize: 9,
+                                    color: isDark ? Colors.white54 : Colors.black45,
+                                  ),
+                                  labelResolver: (_) =>
+                                      'avg ${stats.avgLatency.toStringAsFixed(1)}ms',
+                                ),
+                              ),
+                          ],
                         ),
                         titlesData: FlTitlesData(
                           rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                           topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                           bottomTitles: AxisTitles(
-                            axisNameWidget: Text('TIME OF PING',
-                                style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                            axisNameSize: 20,
+                            axisNameSize: 18,
                             sideTitles: SideTitles(
-                              showTitles: true, reservedSize: 60, interval: max(5, (widget.device.history.length / 8).roundToDouble()),
+                              showTitles: true,
+                              reservedSize: 50,
+                              interval: max(5, (history.length / 8).roundToDouble()),
                               getTitlesWidget: (v, m) {
-                                if (v.toInt() >= 0 && v.toInt() < widget.device.history.length) {
-                                  final time = widget.device.history[v.toInt()].timestamp;
+                                if (v.toInt() >= 0 && v.toInt() < history.length) {
+                                  final time = history[v.toInt()].timestamp;
                                   return SideTitleWidget(
-                                    meta: m, space: 12,
+                                    meta: m,
+                                    space: 10,
                                     child: Transform.rotate(
                                       angle: -0.5,
                                       child: Text(DateFormat('MM/dd HH:mm').format(time),
-                                          style: GoogleFonts.jetBrainsMono(fontSize: 9, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                                          style: GoogleFonts.jetBrainsMono(
+                                              fontSize: 9,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant)),
                                     ),
                                   );
                                 }
@@ -700,54 +799,147 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
                             ),
                           ),
                           leftTitles: AxisTitles(
-                            axisNameWidget: Text('LATENCY (ms)',
-                                style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                            axisNameSize: 25,
+                            axisNameSize: 22,
                             sideTitles: SideTitles(
-                              showTitles: true, reservedSize: 50, interval: yInterval,
-                              getTitlesWidget: (v, m) => SideTitleWidget(meta: m,
-                                  child: Text(v.toStringAsFixed(1),
-                                      style: GoogleFonts.jetBrainsMono(fontSize: 10, color: Theme.of(context).colorScheme.onSurfaceVariant))),
+                              showTitles: true,
+                              reservedSize: 46,
+                              interval: yInterval,
+                              getTitlesWidget: (v, m) => SideTitleWidget(
+                                  meta: m,
+                                  child: Text(
+                                      yInterval >= 1
+                                          ? v.toStringAsFixed(
+                                              v == v.roundToDouble() ? 0 : 1)
+                                          : v.toStringAsFixed(1),
+                                      style: GoogleFonts.jetBrainsMono(
+                                          fontSize: 9,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .onSurfaceVariant))),
                             ),
                           ),
                         ),
                         borderData: FlBorderData(
                           show: true,
                           border: Border(
-                            bottom: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.1)),
-                            left: BorderSide(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.1)),
+                            bottom: BorderSide(color: borderColor),
+                            left: BorderSide(color: borderColor),
                           ),
                         ),
                         lineTouchData: LineTouchData(
+                          getTouchedSpotIndicator: (barData, spotIndexes) {
+                            return spotIndexes.map((i) {
+                              final spot = barData.spots[i];
+                              final idx = spot.x.toInt();
+                              final color = (idx >= 0 && idx < history.length)
+                                  ? _statusColor(history[idx].status)
+                                  : _kOnline;
+                              return TouchedSpotIndicatorData(
+                                FlLine(
+                                  color: isDark ? Colors.white24 : Colors.black12,
+                                  strokeWidth: 1,
+                                  dashArray: [4, 4],
+                                ),
+                                FlDotData(
+                                    show: true,
+                                    getDotPainter: (s, _, __, ___) =>
+                                        FlDotCirclePainter(
+                                          radius: 5,
+                                          color: color,
+                                          strokeColor: Colors.white,
+                                          strokeWidth: 2,
+                                        )),
+                              );
+                            }).toList();
+                          },
                           touchTooltipData: LineTouchTooltipData(
-                            getTooltipColor: (spot) => const Color(0xFF1E293B),
-                            tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            getTooltipColor: (_) =>
+                                isDark ? const Color(0xFF1E293B) : Colors.white,
+                            tooltipPadding:
+                                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            tooltipBorder:
+                                BorderSide(color: isDark ? Colors.white12 : Colors.black12),
                             getTooltipItems: (touchedSpots) {
                               return touchedSpots.map((spot) {
-                                if (spot.x.toInt() >= 0 && spot.x.toInt() < widget.device.history.length) {
-                                  final historyItem = widget.device.history[spot.x.toInt()];
-                                  final timeStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(historyItem.timestamp);
-                                  return LineTooltipItem('$timeStr\n${spot.y.toStringAsFixed(1)} ms',
-                                      GoogleFonts.jetBrainsMono(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12));
+                                final idx = spot.x.toInt();
+                                if (idx < 0 || idx >= history.length) return null;
+                                final h = history[idx];
+                                final timeStr =
+                                    DateFormat('HH:mm:ss').format(h.timestamp);
+                                final textColor =
+                                    isDark ? Colors.white : Colors.black87;
+                                final isOffline =
+                                    h.status == DeviceStatus.offline;
+
+                                if (isOffline) {
+                                  return LineTooltipItem(
+                                    'OFFLINE\n$timeStr',
+                                    GoogleFonts.jetBrainsMono(
+                                        color: _kOffline,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 11),
+                                  );
                                 }
-                                return null;
+
+                                final statusStr = h.status.name.toUpperCase();
+                                final latencyStr =
+                                    h.latencyMs != null && h.latencyMs! > 0
+                                        ? '${h.latencyMs!.toStringAsFixed(1)}ms'
+                                        : '---';
+                                final lossStr = (h.packetLoss ?? 0) > 0
+                                    ? '  ${h.packetLoss!.toStringAsFixed(0)}% loss'
+                                    : '';
+                                return LineTooltipItem(
+                                  '$statusStr  $latencyStr$lossStr\n$timeStr',
+                                  GoogleFonts.jetBrainsMono(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 11),
+                                );
                               }).toList();
                             },
                           ),
                         ),
                         lineBarsData: [
                           LineChartBarData(
-                            spots: spots, isCurved: true, curveSmoothness: 0.2,
-                            color: Theme.of(context).colorScheme.primary, barWidth: 2.5,
-                            dotData: const FlDotData(show: false),
+                            spots: spots,
+                            isCurved: true,
+                            curveSmoothness: 0.15,
+                            preventCurveOverShooting: true,
+                            color: Theme.of(context).colorScheme.primary,
+                            barWidth: 2,
+                            dotData: FlDotData(
+                              show: true,
+                              getDotPainter: (spot, _, __, ___) {
+                                final idx = spot.x.toInt();
+                                final color = (idx >= 0 && idx < history.length)
+                                    ? _statusColor(history[idx].status)
+                                    : _kOnline;
+                                return FlDotCirclePainter(
+                                  radius: 3.5,
+                                  color: color,
+                                  strokeColor: isDark
+                                      ? const Color(0xFF020617)
+                                      : Colors.white,
+                                  strokeWidth: 1.5,
+                                );
+                              },
+                            ),
                             belowBarData: BarAreaData(
                               show: true,
                               gradient: LinearGradient(
                                 colors: [
-                                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.15),
-                                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.0),
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withValues(alpha: 0.1),
+                                  Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withValues(alpha: 0.0),
                                 ],
-                                begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
                               ),
                             ),
                           ),
@@ -764,77 +956,383 @@ class _DeviceDetailsScreenState extends State<DeviceDetailsScreen> {
     );
   }
 
-  Widget _buildActivitySection(BuildContext context) {
+  // ───────────────────── Console ─────────────────────
+
+  Widget _buildConsole(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final recent = widget.device.history.reversed.take(15).toList();
+    final cs = Theme.of(context).colorScheme;
+    final addr = widget.device.address;
+    final results = _pingResults;
+    final hasResults = results.isNotEmpty;
+    final stopped = !_isPinging && hasResults;
+
+    // Theme-aware console colors
+    final bgColor = isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC);
+    final barColor = isDark ? const Color(0xFF1E293B) : const Color(0xFFEFF3F8);
+    final borderColor = isDark ? Colors.white.withValues(alpha: 0.06) : const Color(0xFFD5DCE5);
+    final mutedColor = cs.onSurfaceVariant;
+    final replyColor = isDark ? const Color(0xFF3FB950) : const Color(0xFF16A34A);
+    final timeoutColor = isDark ? const Color(0xFFF85149) : const Color(0xFFDC2626);
+
+    // Summary stats
+    final replied = results.where((r) => r.latencyMs != null).toList();
+    final lossP = hasResults ? ((results.length - replied.length) / results.length * 100) : 0.0;
+
     return Container(
-      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF0F172A) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+        color: bgColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
       ),
+      clipBehavior: Clip.antiAlias,
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text('LIVE EVENT STREAM', style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 11, color: Colors.grey, letterSpacing: 1)),
-          const SizedBox(height: 16),
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: recent.length,
-            separatorBuilder: (context, index) => Divider(color: Colors.white.withValues(alpha: 0.05), height: 24),
-            itemBuilder: (context, index) {
-              final h = recent[index];
-              return Row(
-                children: [
-                  Icon(Icons.circle, size: 8, color: h.status == DeviceStatus.online ? Colors.green : Colors.red),
-                  const SizedBox(width: 12),
-                  Expanded(
+          // ── Title bar ──
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: barColor,
+              border: Border(bottom: BorderSide(color: borderColor)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.terminal_rounded, size: 15, color: mutedColor),
+                const SizedBox(width: 10),
+                Text('PING',
+                    style: GoogleFonts.jetBrainsMono(
+                        fontSize: 11, fontWeight: FontWeight.w700, color: mutedColor)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(addr,
+                      style: GoogleFonts.jetBrainsMono(fontSize: 11, color: mutedColor),
+                      overflow: TextOverflow.ellipsis),
+                ),
+                const SizedBox(width: 8),
+                // Clear button
+                if (hasResults && !_isPinging)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: _consoleButton('Clear', Icons.delete_outline_rounded, mutedColor, _clearConsole),
+                  ),
+                // Start / Stop button
+                _isPinging
+                    ? _consoleButton('Stop', Icons.stop_rounded, timeoutColor, _stopPing)
+                    : _consoleButton('Start', Icons.play_arrow_rounded, replyColor, _startPing),
+              ],
+            ),
+          ),
+          // ── Body ──
+          Expanded(
+            child: !hasResults && !_isPinging
+                ? Center(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(h.status == DeviceStatus.online ? 'REPLY RECEIVED' : 'REQUEST TIMED OUT',
-                            style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.bold)),
-                        const SizedBox(height: 2),
-                        Text(DateFormat('yyyy-MM-dd HH:mm:ss').format(h.timestamp),
-                            style: GoogleFonts.jetBrainsMono(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                        Icon(Icons.sensors_rounded,
+                            size: 28, color: cs.onSurface.withValues(alpha: 0.06)),
+                        const SizedBox(height: 12),
+                        Text('Press Start to begin',
+                            style: GoogleFonts.jetBrainsMono(
+                                fontSize: 12, color: mutedColor.withValues(alpha: 0.5))),
                       ],
                     ),
+                  )
+                : ListView.builder(
+                    controller: _consoleScrollController,
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                    itemCount: results.length + 1 + (stopped ? 1 : 0),
+                    itemBuilder: (context, index) {
+                      // ── Header ──
+                      if (index == 0) {
+                        return Text(
+                          '\$ ping $addr\nICMP  interval=1s\n',
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11, color: mutedColor, height: 1.5),
+                        );
+                      }
+                      // ── Summary footer (only when stopped) ──
+                      if (stopped && index == results.length + 1) {
+                        final avgMs = replied.isEmpty
+                            ? 0.0
+                            : replied.fold<double>(0, (s, r) => s + r.latencyMs!) / replied.length;
+                        final minMs = replied.isEmpty
+                            ? 0.0
+                            : replied.fold<double>(
+                                double.infinity, (m, r) => min(m, r.latencyMs!));
+                        final maxMs = replied.isEmpty
+                            ? 0.0
+                            : replied.fold<double>(0, (m, r) => max(m, r.latencyMs!));
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            '--- $addr ping statistics ---\n'
+                            '${results.length} transmitted, ${replied.length} received, '
+                            '${lossP.toStringAsFixed(0)}% loss\n'
+                            'rtt min/avg/max = '
+                            '${minMs.toStringAsFixed(1)}/'
+                            '${avgMs.toStringAsFixed(1)}/'
+                            '${maxMs.toStringAsFixed(1)} ms',
+                            style: GoogleFonts.jetBrainsMono(
+                                fontSize: 11,
+                                height: 1.5,
+                                color: lossP > 50
+                                    ? timeoutColor.withValues(alpha: 0.7)
+                                    : mutedColor),
+                          ),
+                        );
+                      }
+                      // ── Ping result line ──
+                      final r = results[index - 1];
+                      final ts = DateFormat('HH:mm:ss').format(r.timestamp);
+
+                      if (r.latencyMs != null) {
+                        return Text(
+                          '$ts  reply  seq=${r.seq}  time=${r.latencyMs!.toStringAsFixed(1)}ms',
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11, height: 1.6, color: replyColor),
+                        );
+                      } else {
+                        return Text(
+                          '$ts  request timeout  seq=${r.seq}',
+                          style: GoogleFonts.jetBrainsMono(
+                              fontSize: 11, height: 1.6, color: timeoutColor),
+                        );
+                      }
+                    },
                   ),
-                  Text(h.latencyMs != null ? '${h.latencyMs!.toStringAsFixed(1)}ms' : '0.0ms',
-                      style: GoogleFonts.jetBrainsMono(fontSize: 11)),
-                ],
-              );
-            },
           ),
         ],
       ),
     );
   }
 
-  List<FlSpot> _getSpots() {
-    return List.generate(widget.device.history.length, (i) {
-      return FlSpot(i.toDouble(), widget.device.history[i].latencyMs ?? 0.0);
-    });
+  Widget _consoleButton(String label, IconData icon, Color color, VoidCallback onPressed) {
+    return SizedBox(
+      height: 28,
+      child: TextButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 14, color: color),
+        label: Text(label,
+            style: GoogleFonts.jetBrainsMono(
+                fontSize: 10, fontWeight: FontWeight.w700, color: color)),
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          backgroundColor: color.withValues(alpha: 0.08),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(6),
+            side: BorderSide(color: color.withValues(alpha: 0.2)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ───────────────────── SLA bar ─────────────────────
+
+  Widget _buildSLABar(BuildContext context, _SLAData sla) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardTheme.color,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+            color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1)),
+      ),
+      child: Row(
+        children: [
+          Text('UPTIME',
+              style: GoogleFonts.inter(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  letterSpacing: 1)),
+          const SizedBox(width: 20),
+          _buildSLAChip(context, '24h', sla.perfect24h),
+          const SizedBox(width: 12),
+          _buildSLAChip(context, '7d', sla.perfect7d),
+          const SizedBox(width: 12),
+          _buildSLAChip(context, '30d', sla.perfect30d),
+          const SizedBox(width: 24),
+          Container(
+              width: 1,
+              height: 28,
+              color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.grey.withValues(alpha: 0.12)),
+          const SizedBox(width: 24),
+          Text('DOWNTIME',
+              style: GoogleFonts.inter(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  letterSpacing: 0.5)),
+          const SizedBox(width: 12),
+          Text(_formatDuration(sla.totalDowntime),
+              style: GoogleFonts.jetBrainsMono(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: sla.totalDowntime.inMinutes > 0
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF10B981))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSLAChip(BuildContext context, String label, double uptime) {
+    final color = uptime >= 99.9
+        ? const Color(0xFF10B981)
+        : (uptime >= 99 ? const Color(0xFFF59E0B) : const Color(0xFFEF4444));
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label ',
+            style: GoogleFonts.inter(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        Text('${uptime.toStringAsFixed(2)}%',
+            style: GoogleFonts.jetBrainsMono(fontSize: 13, fontWeight: FontWeight.w700, color: color)),
+      ],
+    );
+  }
+
+  // ───────────────────── Scan results ─────────────────────
+
+  Widget _buildScanResultSection(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF0F172A) : Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Text('LAST DEEP SCAN REPORT',
+                style: GoogleFonts.inter(
+                    fontWeight: FontWeight.w900, fontSize: 10, color: Colors.grey, letterSpacing: 1)),
+            const Spacer(),
+            const Icon(Icons.history, size: 14, color: Colors.grey),
+          ]),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(14),
+            width: double.infinity,
+            decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.3), borderRadius: BorderRadius.circular(8)),
+            child: Text(widget.device.lastScanResult!,
+                style: GoogleFonts.jetBrainsMono(
+                    fontSize: 11, color: const Color(0xFF34D399), height: 1.5)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ───────────────────── Shared helpers ─────────────────────
+
+  Widget _buildHeaderAction(String label, IconData icon, VoidCallback onTap) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 8),
+      child: TextButton.icon(
+        onPressed: onTap,
+        icon: Icon(icon, size: 18),
+        label: Text(label, style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        style: TextButton.styleFrom(
+          foregroundColor: Theme.of(context).colorScheme.primary,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+        ),
+      ),
+    );
+  }
+
+  String _formatDuration(Duration d) {
+    if (d.inDays > 0) return '${d.inDays}d ${d.inHours % 24}h ${d.inMinutes % 60}m';
+    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
+    if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
+    return '${d.inSeconds}s';
+  }
+
+  // ───────────────────── Data ─────────────────────
+
+  _SLAData _calculateSLA() {
+    final history = widget.device.history;
+    if (history.isEmpty) return _SLAData(100, 100, 100, Duration.zero);
+
+    final now = DateTime.now();
+    final last24h = history.where((h) => now.difference(h.timestamp).inHours < 24).toList();
+    final last7d = history.where((h) => now.difference(h.timestamp).inDays < 7).toList();
+    final last30d = history.where((h) => now.difference(h.timestamp).inDays < 30).toList();
+
+    double uptime(List<StatusHistory> h) {
+      if (h.isEmpty) return 100.0;
+      final online = h.where((e) => e.status == DeviceStatus.online).length;
+      return (online / h.length) * 100;
+    }
+
+    Duration totalDowntime = Duration.zero;
+    DateTime? downStart;
+    for (var h in history) {
+      if (h.status == DeviceStatus.offline) {
+        downStart ??= h.timestamp;
+      } else if (downStart != null) {
+        totalDowntime += h.timestamp.difference(downStart);
+        downStart = null;
+      }
+    }
+    if (downStart != null) {
+      totalDowntime += now.difference(downStart);
+    }
+
+    return _SLAData(
+      uptime(last24h), uptime(last7d), uptime(last30d),
+      totalDowntime,
+    );
+  }
+
+  /// Computes a human-friendly axis interval (e.g. 0.1, 0.2, 0.5, 1, 2, 5, 10, …).
+  double _niceInterval(double maxVal, int targetSteps) {
+    if (maxVal <= 0) return 1.0;
+    final rough = maxVal / targetSteps;
+    final magnitude = pow(10, (log(rough) / ln10).floor()).toDouble();
+    final residual = rough / magnitude;
+    double nice;
+    if (residual <= 1.5) {
+      nice = 1;
+    } else if (residual <= 3) {
+      nice = 2;
+    } else if (residual <= 7) {
+      nice = 5;
+    } else {
+      nice = 10;
+    }
+    return nice * magnitude;
   }
 
   _DeviceStats _calculateStats() {
     if (widget.device.history.isEmpty) return _DeviceStats(0, 0, 0, 0, 0);
-    final online = widget.device.history.where((h) => h.status == DeviceStatus.online).toList();
-    final uptime = (online.length / widget.device.history.length) * 100;
+    final responded = widget.device.history.where((h) => h.latencyMs != null && h.latencyMs! > 0).toList();
+    final uptime = (responded.length / widget.device.history.length) * 100;
     double totalLatency = 0, maxLatency = 0, minLatency = double.infinity, totalLoss = 0;
     for (var h in widget.device.history) {
-      totalLatency += h.latencyMs ?? 0;
       totalLoss += h.packetLoss ?? 100;
-      if ((h.latencyMs ?? 0) > maxLatency) maxLatency = h.latencyMs!;
-      if ((h.latencyMs ?? 0) < minLatency && h.status == DeviceStatus.online) minLatency = h.latencyMs!;
+      if (h.latencyMs != null && h.latencyMs! > 0) {
+        totalLatency += h.latencyMs!;
+        if (h.latencyMs! > maxLatency) maxLatency = h.latencyMs!;
+        if (h.latencyMs! < minLatency) minLatency = h.latencyMs!;
+      }
     }
     if (minLatency == double.infinity) minLatency = 0;
     return _DeviceStats(
       uptime,
-      online.isEmpty ? 0 : totalLatency / online.length,
-      maxLatency, minLatency,
+      responded.isEmpty ? 0 : totalLatency / responded.length,
+      maxLatency,
+      minLatency,
       totalLoss / widget.device.history.length,
     );
   }
@@ -846,8 +1344,14 @@ class _DeviceStats {
 }
 
 class _SLAData {
-  final double avail24h, avail7d, avail30d;
   final double perfect24h, perfect7d, perfect30d;
   final Duration totalDowntime;
-  _SLAData(this.avail24h, this.avail7d, this.avail30d, this.perfect24h, this.perfect7d, this.perfect30d, this.totalDowntime);
+  _SLAData(this.perfect24h, this.perfect7d, this.perfect30d, this.totalDowntime);
+}
+
+class _PingResult {
+  final int seq;
+  final double? latencyMs;
+  final DateTime timestamp;
+  _PingResult({required this.seq, this.latencyMs, required this.timestamp});
 }

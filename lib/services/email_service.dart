@@ -219,11 +219,17 @@ class EmailService {
       ..subject = subject
       ..html = htmlContent;
 
-    try {
-      await send(message, smtpServer);
-      debugPrint('Email alert sent successfully to ${_settings!.recipientEmail}');
-    } catch (e) {
-      debugPrint('Failed to send email alert: $e');
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        await send(message, smtpServer);
+        debugPrint('Email alert sent to ${_settings!.recipientEmail}');
+        return;
+      } catch (e) {
+        debugPrint('Email alert attempt ${attempt + 1}/3 failed: $e');
+        if (attempt < 2) {
+          await Future.delayed(Duration(seconds: 2 << attempt));
+        }
+      }
     }
   }
 }

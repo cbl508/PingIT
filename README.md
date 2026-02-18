@@ -8,8 +8,10 @@ Cross-platform infrastructure monitoring dashboard built with Flutter. Track the
 - **Multi-protocol health checks** — ICMP ping, TCP port connect, and HTTP/HTTPS monitoring
 - **Configurable polling** — Per-device check intervals from 5 seconds to 10 minutes
 - **Failure thresholds** — Set consecutive failure count before triggering offline alerts (reduces false positives)
+- **Sliding-window status evaluation** — Effective status (online/degraded/offline) determined by analysing recent history, not just the latest check
 - **Exponential backoff** — Automatic poll rate reduction on repeated failures (up to 300s) to avoid hammering unreachable hosts
 - **Latency & packet loss thresholds** — Mark devices as degraded when user-defined thresholds are exceeded (max 10,000ms)
+- **Concurrent connection limit** — Batches of 20 simultaneous checks to avoid resource exhaustion on large device lists
 
 ### Dashboard
 - **Real-time status HUD** — Live pie chart breakdown with clickable status filters (online, degraded, offline, paused)
@@ -18,9 +20,8 @@ Cross-platform infrastructure monitoring dashboard built with Flutter. Track the
 - **Stability scoring** — Combined uptime + packet loss reliability metric (70/30 weighted)
 - **Sort options** — Sort devices by status, health score, latency, or name
 
-### SLA & Reporting
-- **Split SLA metrics** — "Available" (non-offline) and "Perfect Uptime" (online only) tracked separately
-- **Time windows** — 24-hour, 7-day, and 30-day uptime percentages per device
+### Uptime & Reporting
+- **Uptime metrics** — 24-hour, 7-day, and 30-day uptime percentages per device
 - **Total downtime tracking** — Cumulative downtime duration calculated from history
 - **Persistent history** — Status history survives app restarts (configurable per-device, default 2000 entries)
 
@@ -35,14 +36,15 @@ Cross-platform infrastructure monitoring dashboard built with Flutter. Track the
 - **Desktop notifications** — Native OS notifications on Windows, Linux, and macOS
 - **Platform alert sounds** — OS-native sounds (Linux: paplay/aplay, macOS: afplay, Windows: PowerShell SystemSounds)
 - **Recovery detection** — "RECOVERED" distinction when a device comes back online after an outage
-- **Email alerts** — SMTP-based email notifications with HTML formatting and downtime duration
-- **Webhook integration** — Slack, Discord, and generic JSON webhooks with recovery event support
-- **Quiet hours** — Suppress notifications during scheduled windows with per-day granularity
+- **Email alerts** — SMTP-based email notifications with HTML formatting and downtime duration (3-attempt retry with exponential backoff)
+- **Webhook integration** — Slack, Discord, and generic JSON webhooks with recovery event support (3-attempt retry with exponential backoff)
+- **Quiet hours** — Suppress notifications during scheduled windows with per-day granularity (suppression logged with reason)
 - **Maintenance windows** — Per-device scheduled maintenance with date/time picker; alerts suppressed during window
-- **Smart suppression** — Parent-based alert suppression (child alerts silenced when parent is offline)
+- **Smart suppression** — Parent-based alert suppression (child alerts silenced when parent is offline); orphaned parent references auto-cleaned on device deletion
 
 ### Network Tools
-- **Quick Scan** — Built-in TCP port scanner with DNS resolution, ping latency, and service banner grabbing (no external tools required)
+- **Quick Scan** — TCP port scanner with DNS resolution, ping latency, service banner grabbing, MAC address lookup, OS fingerprinting (TTL-based), and device type inference — no external tools required
+- **OUI vendor database** — 35,000+ manufacturer entries for automatic hardware identification from MAC addresses
 - **Deep Scan** — Full nmap enumeration: open ports, services, OS detection, MAC address, NSE scripts, traceroute
 - **Dependency check** — Actionable dialog with OS-specific install instructions if nmap/traceroute is missing
 - **Traceroute** — Live terminal-style network path diagnostics
@@ -67,8 +69,9 @@ Cross-platform infrastructure monitoring dashboard built with Flutter. Track the
 
 ### UI/UX
 - **Dark / Light / System theme** — Material 3 design
-- **Latency distribution chart** — Scrollable line chart with rotated time labels and tooltips
+- **Latency distribution chart** — Scrollable line chart with status-colored dots (green/amber/red), average latency reference line, and interactive tooltips showing status, latency, packet loss, and timestamp
 - **Status heatmap** — Last 60 ticks visualized as a color bar with tooltips
+- **Live ping console** — Real-time terminal-style ping output with start/stop control and summary statistics
 - **Chart optimization** — Details screen only redraws when history changes
 
 ## Supported Platforms
@@ -125,7 +128,7 @@ Download the latest release from the [Releases page](https://github.com/cbl508/P
 
 | File | Platform | Description |
 |------|----------|-------------|
-| `pingit-1.2.0-setup.exe` | Windows | Installer with Start Menu/Desktop shortcuts and optional Nmap download prompt |
+| `pingit-1.3.0-setup.exe` | Windows | Installer with Start Menu/Desktop shortcuts and optional Nmap download prompt |
 | `pingit-windows-portable.zip` | Windows | Portable — extract and run, no installation needed |
 | `pingit-linux.tar.gz` | Linux | Extract and run `./pingit` |
 
@@ -143,19 +146,21 @@ tar -xzf pingit-linux.tar.gz
 ```
 lib/
   main.dart                        # Entry point and theme configuration
+  data/
+    oui_database.dart              # 35,000+ IEEE OUI vendor entries for MAC lookup
   models/
     device_model.dart              # Device, DeviceGroup, StatusHistory models
     device_model.g.dart            # JSON serialization (hand-maintained)
   screens/
     home_screen.dart               # App shell with navigation and state management
     device_list_screen.dart        # Dashboard with status HUD and device tiles
-    device_details_screen.dart     # Per-device monitoring with SLA, charts, events
+    device_details_screen.dart     # Per-device monitoring with uptime, charts, console
     topology_screen.dart           # Interactive network topology graph
     logs_screen.dart               # Event stream with filters, font size, CSV export
     settings_screen.dart           # App config, email, webhooks, import/export, updates
     add_device_screen.dart         # Device creation/editing with maintenance windows
   services/
-    ping_service.dart              # ICMP/TCP/HTTP health checking with backoff
+    ping_service.dart              # ICMP/TCP/HTTP health checking with sliding-window status
     storage_service.dart           # File-based persistence with race condition safety
     email_service.dart             # SMTP alert notifications with HTML templates
     webhook_service.dart           # Slack, Discord, generic webhook alerts
@@ -164,7 +169,7 @@ lib/
     update_service.dart            # GitHub-based automatic updates
     logging_service.dart           # Structured logging to file
   widgets/
-    scan_dialog.dart               # Quick/Deep scan dialogs with dependency checking
+    scan_dialog.dart               # Quick/Deep scan with MAC/OS/device fingerprinting
 ```
 
 ## License

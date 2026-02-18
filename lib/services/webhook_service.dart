@@ -99,16 +99,22 @@ class WebhookService {
     if (_settings!.url.trim().isEmpty) return;
     if (oldStatus == newStatus || newStatus == DeviceStatus.unknown) return;
 
-    try {
-      final payload = _buildPayload(device, oldStatus, newStatus);
-      await http.post(
-        Uri.parse(_settings!.url),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 10));
-      debugPrint('Webhook sent to ${_settings!.url}');
-    } catch (e) {
-      debugPrint('Webhook failed: $e');
+    final payload = _buildPayload(device, oldStatus, newStatus);
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        await http.post(
+          Uri.parse(_settings!.url),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(payload),
+        ).timeout(const Duration(seconds: 10));
+        debugPrint('Webhook sent to ${_settings!.url}');
+        return;
+      } catch (e) {
+        debugPrint('Webhook attempt ${attempt + 1}/3 failed: $e');
+        if (attempt < 2) {
+          await Future.delayed(Duration(seconds: 2 << attempt));
+        }
+      }
     }
   }
 

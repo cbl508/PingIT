@@ -363,11 +363,18 @@ class _LogsScreenState extends State<LogsScreen> {
   }
 
   String _statusLabel(StatusHistory log) {
+    final hasLatency = log.latencyMs != null && log.latencyMs! > 0;
     switch (log.status) {
-      case DeviceStatus.online: return '${log.latencyMs?.toStringAsFixed(1)}ms';
-      case DeviceStatus.degraded: return '${log.latencyMs?.toStringAsFixed(1)}ms';
-      case DeviceStatus.offline: return 'DROPPED';
-      default: return 'PAUSED';
+      case DeviceStatus.online:
+        return hasLatency ? '${log.latencyMs!.toStringAsFixed(1)}ms' : 'OK';
+      case DeviceStatus.degraded:
+        if (hasLatency) return '${log.latencyMs!.toStringAsFixed(1)}ms';
+        final loss = log.packetLoss ?? 0;
+        return loss > 0 ? '${loss.toStringAsFixed(0)}% loss' : 'DEGRADED';
+      case DeviceStatus.offline:
+        return 'DROPPED';
+      default:
+        return 'PAUSED';
     }
   }
 }

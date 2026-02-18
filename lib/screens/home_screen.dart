@@ -56,6 +56,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // Backoff tracking
   DateTime? _lastPollAttempt;
 
+  /// Clears parentId references that point to deleted devices.
+  void _cleanOrphanedParents() {
+    final ids = _devices.map((d) => d.id).toSet();
+    for (final d in _devices) {
+      if (d.parentId != null && !ids.contains(d.parentId)) {
+        d.parentId = null;
+      }
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -201,6 +211,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               );
               unawaited(_emailService.sendAlert(d, oldS, newS));
               unawaited(_webhookService.sendAlert(d, oldS, newS));
+            } else {
+              final reason = d.isInMaintenance
+                  ? 'maintenance window'
+                  : _quietHours.isCurrentlyQuiet()
+                      ? 'quiet hours'
+                      : 'parent offline';
+              _log.info('Alert suppressed: ${d.name} (${oldS.name} → ${newS.name})',
+                  data: {'reason': reason, 'address': d.address});
             }
 
             // Critical transitions save immediately
@@ -417,7 +435,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
 
     if (result == 'delete' && existingDevice != null) {
-      setState(() => _devices.remove(existingDevice));
+      setState(() {
+        _devices.remove(existingDevice);
+        _cleanOrphanedParents();
+      });
       unawaited(_saveAll());
     } else if (result is Device) {
       setState(() {
@@ -450,7 +471,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
 
     if (result == 'delete') {
-      setState(() => _devices.remove(device));
+      setState(() {
+        _devices.remove(device);
+        _cleanOrphanedParents();
+      });
       unawaited(_saveAll());
     } else if (result is Device && result.id != device.id) {
       // Clone result — add as new device
@@ -468,7 +492,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       builder: (dialogContext) => CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.enter): () {
-            setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
+            setState(() {
+              _devices.removeWhere((d) => ids.contains(d.id));
+              _cleanOrphanedParents();
+            });
             unawaited(_saveAll());
             Navigator.pop(dialogContext);
           },
@@ -482,7 +509,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
               TextButton(
                 onPressed: () {
-                  setState(() => _devices.removeWhere((d) => ids.contains(d.id)));
+                  setState(() {
+                    _devices.removeWhere((d) => ids.contains(d.id));
+                    _cleanOrphanedParents();
+                  });
                   unawaited(_saveAll());
                   Navigator.pop(dialogContext);
                 },

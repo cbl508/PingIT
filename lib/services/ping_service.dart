@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:dart_ping/dart_ping.dart';
 import 'package:http/http.dart' as http;
@@ -37,58 +38,111 @@ class PingService {
     }
 
     final oldStatus = device.status;
-
     final result = await _performCheck(device);
 
-    // Track consecutive failures for alert thresholds
+    // Track consecutive failures (backwards compat)
     if (result.status == DeviceStatus.offline) {
       device.consecutiveFailures++;
     } else {
       device.consecutiveFailures = 0;
     }
 
-    // Apply failure threshold: only transition to offline after N consecutive failures
-    DeviceStatus effectiveStatus = result.status;
-    if (result.status == DeviceStatus.offline &&
-        device.consecutiveFailures < device.failureThreshold &&
-        oldStatus != DeviceStatus.unknown) {
-      effectiveStatus = oldStatus;
-    }
-
-    // Check user-defined thresholds for degraded detection
-    if (effectiveStatus == DeviceStatus.online) {
-      if (device.latencyThreshold != null &&
-          result.latency != null &&
-          result.latency! > device.latencyThreshold!) {
-        effectiveStatus = DeviceStatus.degraded;
-      }
-      if (device.packetLossThreshold != null &&
-          result.packetLoss > device.packetLossThreshold!) {
-        effectiveStatus = DeviceStatus.degraded;
-      }
-    }
-
-    device.status = effectiveStatus;
+    // Record raw check result and metrics
     device.lastLatency = result.latency;
     device.packetLoss = result.packetLoss;
     device.lastResponseCode = result.responseCode;
     device.lastPingTime = now;
 
+    // Store raw check result in history (not the effective device status)
     device.history.add(StatusHistory(
       timestamp: now,
-      status: effectiveStatus,
+      status: result.status,
       latencyMs: result.latency,
       packetLoss: result.packetLoss,
       responseCode: result.responseCode,
     ));
 
-    while (device.history.length > device.maxHistory) {
-      device.history.removeAt(0);
+    if (device.history.length > device.maxHistory) {
+      device.history.removeRange(0, device.history.length - device.maxHistory);
     }
+
+    // Evaluate effective device status using sliding window over recent history
+    final effectiveStatus = _evaluateDeviceStatus(device);
+    device.status = effectiveStatus;
 
     if (effectiveStatus != oldStatus && onStatusChanged != null) {
       onStatusChanged(device, oldStatus, effectiveStatus);
     }
+  }
+
+  /// Determines the device's effective status by analysing recent history.
+  ///
+  /// - **Offline** : last [failureThreshold] raw checks ALL completely failed,
+  ///   OR the device has been non-online for [failureThreshold * 3] consecutive
+  ///   checks (covers sustained partial-failure / degraded streaks).
+  /// - **Degraded** : the sliding window contains any non-online entries
+  ///   (flapping, intermittent loss, elevated latency).
+  /// - **Online** : entire sliding window is clean.
+  DeviceStatus _evaluateDeviceStatus(Device device) {
+    final history = device.history;
+    if (history.isEmpty) return DeviceStatus.unknown;
+
+    // --- Offline detection ---
+
+    // 1. Consecutive trailing complete failures (raw status == offline)
+    int trailingOffline = 0;
+    for (int i = history.length - 1; i >= 0; i--) {
+      if (history[i].status == DeviceStatus.offline) {
+        trailingOffline++;
+      } else {
+        break;
+      }
+    }
+    if (trailingOffline >= device.failureThreshold) {
+      return DeviceStatus.offline;
+    }
+
+    // 2. Consecutive trailing non-online entries (offline + degraded).
+    //    Escalates to offline after a longer streak — covers the case where
+    //    partial responses keep the raw status as "degraded" indefinitely.
+    int trailingNonOnline = 0;
+    for (int i = history.length - 1; i >= 0; i--) {
+      if (history[i].status != DeviceStatus.online) {
+        trailingNonOnline++;
+      } else {
+        break;
+      }
+    }
+    if (trailingNonOnline >= device.failureThreshold * 3) {
+      return DeviceStatus.offline;
+    }
+
+    // --- Degraded vs Online ---
+
+    final windowSize = max(device.failureThreshold, 5);
+    final window = history.length > windowSize
+        ? history.sublist(history.length - windowSize)
+        : history;
+
+    // Any non-online entry in the window → unstable / flapping → degraded
+    final hasIssues = window.any((h) => h.status != DeviceStatus.online);
+    if (hasIssues) {
+      return DeviceStatus.degraded;
+    }
+
+    // Check user-defined thresholds against the latest result
+    final latest = history.last;
+    if (device.latencyThreshold != null &&
+        latest.latencyMs != null &&
+        latest.latencyMs! > device.latencyThreshold!) {
+      return DeviceStatus.degraded;
+    }
+    if (device.packetLossThreshold != null &&
+        (latest.packetLoss ?? 0) > device.packetLossThreshold!) {
+      return DeviceStatus.degraded;
+    }
+
+    return DeviceStatus.online;
   }
 
   Future<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})> _performCheck(Device device) async {
@@ -105,7 +159,7 @@ class PingService {
   Future<({DeviceStatus status, double? latency, double packetLoss, int? responseCode})> _getHttpResult(String address) async {
     String url = address;
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://$url';
+      url = 'http://$url';
     }
 
     final stopwatch = Stopwatch()..start();
@@ -191,6 +245,7 @@ class PingService {
       final lines = output.split('\n');
 
       int received = 0;
+      int timed = 0;
       double totalLatency = 0;
 
       // Locale-independent: match lines containing "TTL" (universal across locales)
@@ -201,17 +256,18 @@ class PingService {
           received++;
           final match = latencyRegex.firstMatch(line);
           if (match != null) {
+            timed++;
             totalLatency += double.parse(match.group(1)!);
           }
         }
       }
 
       if (received > 0) {
-        final avgLatency = totalLatency / received;
+        final avgLatency = timed > 0 ? totalLatency / timed : null;
         final loss = ((_pingCount - received) / _pingCount) * 100.0;
 
         DeviceStatus status = DeviceStatus.online;
-        if (avgLatency > _latencyWarningThreshold || loss > _packetLossWarningThreshold) {
+        if ((avgLatency != null && avgLatency > _latencyWarningThreshold) || loss > _packetLossWarningThreshold) {
           status = DeviceStatus.degraded;
         }
 
@@ -242,11 +298,12 @@ class PingService {
 
     final sub = ping.stream.listen(
       (event) {
-        if (event.response != null) {
+        // Only count genuine echo replies (have timing data).
+        // ICMP error messages (host unreachable, etc.) have response != null
+        // but time == null — these are NOT successful responses.
+        if (event.response != null && event.response!.time != null) {
           received++;
-          if (event.response!.time != null) {
-            totalLatency += event.response!.time!.inMicroseconds / 1000.0;
-          }
+          totalLatency += event.response!.time!.inMicroseconds / 1000.0;
         }
       },
       onDone: () {
@@ -291,7 +348,10 @@ class PingService {
     return completer.future;
   }
 
+  static const int _maxConcurrentChecks = 20;
+
   /// Only pings devices that are due based on their interval.
+  /// Limits concurrency to [_maxConcurrentChecks] to avoid resource exhaustion.
   Future<void> pingAllDevices(List<Device> devices, {Function(Device, DeviceStatus, DeviceStatus)? onStatusChanged}) async {
     final now = DateTime.now();
     final due = devices.where((d) {
@@ -303,7 +363,11 @@ class PingService {
 
     if (due.isEmpty) return;
     try {
-      await Future.wait(due.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+      // Process in batches to limit concurrent connections
+      for (int i = 0; i < due.length; i += _maxConcurrentChecks) {
+        final batch = due.sublist(i, (i + _maxConcurrentChecks).clamp(0, due.length));
+        await Future.wait(batch.map((device) => pingDevice(device, onStatusChanged: onStatusChanged)));
+      }
       recordPollSuccess();
     } catch (e) {
       recordPollFailure();

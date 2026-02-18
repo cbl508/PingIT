@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:pingit/data/oui_database.dart';
 
 enum ScanType { quick, deep }
 
@@ -20,6 +21,135 @@ const Map<int, String> _commonPorts = {
   8888: 'HTTP-Alt2', 9090: 'Prometheus', 9200: 'Elasticsearch',
   27017: 'MongoDB',
 };
+
+
+/// Reads the local ARP table to find the MAC address for [address].
+Future<String?> _getMacAddress(String address) async {
+  try {
+    ProcessResult result;
+    if (Platform.isLinux) {
+      result = await Process.run('ip', ['neigh', 'show', address]);
+      if (result.exitCode != 0 || (result.stdout as String).trim().isEmpty) {
+        result = await Process.run('arp', ['-n', address]);
+      }
+    } else {
+      result = await Process.run('arp', ['-a', address]);
+    }
+    final output = result.stdout as String;
+    final macMatch = RegExp(r'([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}').firstMatch(output);
+    if (macMatch != null) {
+      return macMatch.group(0)!.replaceAll('-', ':').toUpperCase();
+    }
+  } catch (_) {}
+  return null;
+}
+
+/// Pings the host once and extracts the TTL from the response.
+Future<int?> _getTTL(String address) async {
+  try {
+    final List<String> args;
+    if (Platform.isWindows) {
+      args = ['-n', '1', '-w', '2000', address];
+    } else if (Platform.isMacOS) {
+      args = ['-c', '1', '-W', '2000', address];
+    } else {
+      args = ['-c', '1', '-W', '2', address];
+    }
+    final result = await Process.run('ping', args)
+        .timeout(const Duration(seconds: 5));
+    final output = result.stdout as String;
+    final ttlMatch = RegExp(r'ttl[=:](\d+)', caseSensitive: false).firstMatch(output);
+    if (ttlMatch != null) return int.tryParse(ttlMatch.group(1)!);
+  } catch (_) {}
+  return null;
+}
+
+/// Looks up the manufacturer from a MAC address OUI prefix.
+String? _lookupVendor(String mac) {
+  // Normalize to uppercase hex without separators, then take first 6 chars (OUI)
+  final hex = mac.replaceAll(RegExp(r'[:\-.]'), '').toUpperCase();
+  if (hex.length < 6) return null;
+  return ouiDatabase[hex.substring(0, 6)];
+}
+
+/// Infers the likely OS from TTL, open ports, and service banners.
+String? _inferOS({int? ttl, required List<int> openPorts, required Map<int, String> banners}) {
+  // Banner-based detection (highest confidence)
+  for (final banner in banners.values) {
+    final lower = banner.toLowerCase();
+    if (lower.contains('ubuntu')) return 'Linux (Ubuntu)';
+    if (lower.contains('debian')) return 'Linux (Debian)';
+    if (lower.contains('centos') || lower.contains('red hat') || lower.contains('rhel')) return 'Linux (RHEL/CentOS)';
+    if (lower.contains('fedora')) return 'Linux (Fedora)';
+    if (lower.contains('freebsd')) return 'FreeBSD';
+    if (lower.contains('openbsd')) return 'OpenBSD';
+    if (lower.contains('darwin') || lower.contains('macos')) return 'macOS';
+    if (lower.contains('microsoft') || lower.contains('windows') || lower.contains('iis')) return 'Windows';
+    if (lower.contains('mikrotik')) return 'MikroTik RouterOS';
+    if (lower.contains('openwrt')) return 'OpenWrt';
+    if (lower.contains('junos')) return 'Juniper JunOS';
+    if (lower.contains('cisco')) return 'Cisco IOS';
+  }
+
+  // Port-based hints
+  final portSet = openPorts.toSet();
+  if (portSet.containsAll([135, 445]) || portSet.contains(3389) || portSet.contains(5985)) {
+    return 'Windows';
+  }
+
+  // TTL-based guess (lowest confidence)
+  if (ttl != null) {
+    if (ttl <= 64) return 'Linux/Unix';
+    if (ttl <= 128) return 'Windows';
+    if (ttl <= 255) return 'Network Device';
+  }
+
+  return null;
+}
+
+/// Infers the device type from open ports, vendor, and OS.
+String _inferDeviceType({required List<int> openPorts, String? vendor, String? os}) {
+  final portSet = openPorts.toSet();
+
+  // Vendor-based hints
+  if (vendor != null) {
+    final v = vendor.toLowerCase();
+    if (v.contains('vmware') || v.contains('hyper-v') || v.contains('qemu') || v.contains('virtualbox')) return 'Virtual Machine';
+    if (v.contains('raspberry pi')) return 'Single-Board Computer (IoT)';
+    if (v.contains('espressif')) return 'IoT Microcontroller';
+    if (v.contains('synology') || v.contains('qnap')) return 'NAS';
+    if (v.contains('cisco') || v.contains('juniper') || v.contains('aruba') || v.contains('mikrotik')) {
+      if (portSet.contains(53) || portSet.contains(67)) return 'Router';
+      return 'Network Device';
+    }
+    if (v.contains('ubiquiti') || v.contains('tp-link') || v.contains('netgear') || v.contains('asus')) {
+      return 'Router / Access Point';
+    }
+    if (v.contains('fortinet')) return 'Firewall';
+    if (v.contains('amazon')) return 'Smart Device / IoT';
+    if (v.contains('google')) return 'Smart Device / Cloud';
+  }
+
+  // Port-based inference
+  if (portSet.contains(631) || portSet.contains(9100)) return 'Printer';
+  if (portSet.contains(53) && portSet.contains(67)) return 'Router / DHCP Server';
+  if (portSet.contains(25) || portSet.contains(587) || portSet.contains(465)) return 'Mail Server';
+  if (portSet.containsAll([80, 443]) && (portSet.contains(3306) || portSet.contains(5432) || portSet.contains(27017))) {
+    return 'Web + Database Server';
+  }
+  if (portSet.contains(80) || portSet.contains(443) || portSet.contains(8080)) return 'Web Server';
+  if (portSet.containsAll([3389, 445])) return 'Windows Workstation';
+  if (portSet.contains(3389)) return 'Windows Server / Workstation';
+  if (portSet.contains(1433) || portSet.contains(1521) || portSet.contains(3306) || portSet.contains(5432)) return 'Database Server';
+  if (portSet.contains(5900)) return 'Workstation (VNC)';
+  if (portSet.contains(9090) || portSet.contains(9200)) return 'Monitoring / Analytics Server';
+  if (portSet.contains(6379) || portSet.contains(27017)) return 'Cache / NoSQL Server';
+  if (portSet.contains(22) && openPorts.length <= 2) return 'Linux Server';
+  if (portSet.contains(53)) return 'DNS Server';
+
+  if (openPorts.isEmpty) return 'Unknown (no open ports detected)';
+  return 'Server';
+}
 
 /// Checks if a command exists on the system PATH.
 Future<bool> _commandExists(String cmd) async {
@@ -165,7 +295,7 @@ void showScanInputDialog({
               ),
               const SizedBox(height: 12),
               Text(
-                'Quick Scan: Port scan + DNS + service banners (no external tools)\nDeep Scan: Ports, services, OS, MAC, scripts, traceroute (requires nmap)',
+                'Quick Scan: Ports, DNS, MAC, OS & device fingerprinting (no external tools)\nDeep Scan: Full enumeration, OS, MAC, scripts, traceroute (requires nmap)',
                 style: GoogleFonts.inter(fontSize: 11, color: Colors.grey),
               ),
             ],
@@ -216,7 +346,7 @@ Future<List<String>?> _runBuiltInScan({
   final List<String> lines = [
     '[SYSTEM] Initializing Quick Scan...',
     '[TARGET] $address',
-    '[SCOPE]  DNS resolution, ${_commonPorts.length} port scan, banner grab',
+    '[SCOPE]  DNS, TTL fingerprint, MAC/vendor, ${_commonPorts.length} port scan, OS & device ID',
     '',
   ];
   final scrollController = ScrollController();
@@ -297,15 +427,15 @@ Future<List<String>?> _runBuiltInScan({
                   itemBuilder: (context, i) => Text(
                     lines[i],
                     style: GoogleFonts.jetBrainsMono(
-                      color: lines[i].contains('[OPEN]') || lines[i].contains('[RESULT]')
+                      color: lines[i].contains('[OPEN]') || lines[i].contains('[RESULT]') || lines[i].contains('[OS]') || lines[i].contains('[TYPE]')
                           ? const Color(0xFF34D399)
                           : lines[i].contains('[ERROR]') || lines[i].contains('[SYSTEM ERR]')
                               ? Colors.redAccent
                               : lines[i].contains('[SYSTEM]') || lines[i].contains('[PHASE]')
                                   ? const Color(0xFF60A5FA)
-                                  : lines[i].contains('[BANNER]')
+                                  : lines[i].contains('[BANNER]') || lines[i].contains('[MAC]') || lines[i].contains('[VENDOR]')
                                       ? const Color(0xFFFBBF24)
-                                      : lines[i].contains('[DNS]') || lines[i].contains('[RDNS]') || lines[i].contains('[PING]')
+                                      : lines[i].contains('[DNS]') || lines[i].contains('[RDNS]') || lines[i].contains('[PING]') || lines[i].contains('[TTL]') || lines[i].contains('[FPRINT]') || lines[i].contains('[PROBE]')
                                           ? const Color(0xFF818CF8)
                                           : lines[i].startsWith('═')
                                               ? const Color(0xFF60A5FA)
@@ -348,18 +478,24 @@ Future<List<String>?> _runBuiltInScan({
 }
 
 Future<void> _performTcpScan(String address, List<String> lines, void Function(String) emit) async {
+  String? resolvedIp;
+  int? ttl;
+  String? macAddress;
+  String? macVendor;
+  final openPorts = <int>[];
+  final portBanners = <int, String>{};
+
   // --- Phase 1: DNS / Reverse DNS Resolution ---
-  lines.add('[PHASE] 1/3 — Host Discovery');
+  lines.add('[PHASE] 1/5 — Host Discovery');
   emit('update');
   try {
     final resolved = await InternetAddress.lookup(address);
     if (resolved.isNotEmpty) {
-      final ip = resolved.first.address;
-      lines.add('[DNS]   $address → $ip');
-      // Attempt reverse lookup
+      resolvedIp = resolved.first.address;
+      lines.add('[DNS]   $address → $resolvedIp');
       try {
-        final reverse = await InternetAddress(ip).reverse();
-        lines.add('[RDNS]  $ip → ${reverse.host}');
+        final reverse = await InternetAddress(resolvedIp).reverse();
+        lines.add('[RDNS]  $resolvedIp → ${reverse.host}');
       } catch (_) {
         lines.add('[RDNS]  Reverse lookup not available');
       }
@@ -369,40 +505,75 @@ Future<void> _performTcpScan(String address, List<String> lines, void Function(S
   }
   emit('update');
 
-  // --- Phase 2: Ping / Latency ---
+  // --- Phase 2: Host Fingerprinting (TTL + Latency) ---
+  final target = resolvedIp ?? address;
+  lines.add('');
+  lines.add('[PHASE] 2/5 — Host Fingerprinting');
+  emit('update');
+
+  ttl = await _getTTL(target);
+  if (ttl != null) {
+    lines.add('[TTL]   $ttl');
+    if (ttl <= 64) {
+      lines.add('[FPRINT] TTL suggests Linux/macOS/Unix (base 64)');
+    } else if (ttl <= 128) {
+      lines.add('[FPRINT] TTL suggests Windows (base 128)');
+    } else {
+      lines.add('[FPRINT] TTL suggests network device (base 255)');
+    }
+  } else {
+    lines.add('[TTL]   ICMP blocked or host unreachable');
+  }
+
   try {
     final sw = Stopwatch()..start();
-    final socket = await Socket.connect(address, 80, timeout: const Duration(seconds: 3));
+    final socket = await Socket.connect(target, 80, timeout: const Duration(seconds: 3));
     sw.stop();
     socket.destroy();
-    lines.add('[PING]  Host is reachable (${sw.elapsedMilliseconds}ms via TCP/80)');
+    lines.add('[PROBE] Reachable (${sw.elapsedMilliseconds}ms via TCP/80)');
   } catch (_) {
     try {
       final sw = Stopwatch()..start();
-      final socket = await Socket.connect(address, 443, timeout: const Duration(seconds: 3));
+      final socket = await Socket.connect(target, 443, timeout: const Duration(seconds: 3));
       sw.stop();
       socket.destroy();
-      lines.add('[PING]  Host is reachable (${sw.elapsedMilliseconds}ms via TCP/443)');
+      lines.add('[PROBE] Reachable (${sw.elapsedMilliseconds}ms via TCP/443)');
     } catch (_) {
-      lines.add('[PING]  Host may be unreachable or blocking common ports');
+      lines.add('[PROBE] Host may be unreachable or blocking common ports');
     }
   }
+  emit('update');
+
+  // --- Phase 3: MAC Address Lookup ---
   lines.add('');
+  lines.add('[PHASE] 3/5 — MAC Address Lookup');
   emit('update');
 
-  // --- Phase 3: Port Scan with Banner Grabbing ---
-  lines.add('[PHASE] 2/3 — Port Scan (${_commonPorts.length} ports)');
+  macAddress = await _getMacAddress(target);
+  if (macAddress != null) {
+    lines.add('[MAC]   $macAddress');
+    macVendor = _lookupVendor(macAddress);
+    if (macVendor != null) {
+      lines.add('[VENDOR] $macVendor');
+    } else {
+      lines.add('[VENDOR] Unknown manufacturer');
+    }
+  } else {
+    lines.add('[MAC]   Not available (host is on a different subnet)');
+  }
   emit('update');
-  final openPorts = <int>[];
-  final portBanners = <int, String>{};
+
+  // --- Phase 4: Port Scan with Banner Grabbing ---
+  lines.add('');
+  lines.add('[PHASE] 4/5 — Port Scan (${_commonPorts.length} ports)');
+  emit('update');
+
   final ports = _commonPorts.keys.toList()..sort();
-
   for (int i = 0; i < ports.length; i += 20) {
     final batch = ports.sublist(i, (i + 20).clamp(0, ports.length));
     final futures = batch.map((port) async {
       try {
-        final socket = await Socket.connect(address, port, timeout: const Duration(seconds: 1));
-        // Attempt banner grab — read for up to 2 seconds
+        final socket = await Socket.connect(target, port, timeout: const Duration(seconds: 1));
         String? banner;
         try {
           socket.write('\r\n');
@@ -410,12 +581,9 @@ Future<void> _performTcpScan(String address, List<String> lines, void Function(S
           final raw = String.fromCharCodes(data).trim();
           if (raw.isNotEmpty) {
             banner = raw.length > 80 ? raw.substring(0, 80) : raw;
-            // Clean non-printable characters
             banner = banner.replaceAll(RegExp(r'[^\x20-\x7E]'), '.');
           }
-        } catch (_) {
-          // No banner available — that's fine
-        }
+        } catch (_) {}
         socket.destroy();
         return (port: port, banner: banner);
       } catch (_) {
@@ -432,6 +600,9 @@ Future<void> _performTcpScan(String address, List<String> lines, void Function(S
           portBanners[result.port] = result.banner!;
         }
         lines.add('[OPEN]  Port ${result.port}/tcp  $service');
+        if (result.banner != null) {
+          lines.add('[BANNER]  └─ ${result.banner}');
+        }
         emit('update');
       }
     }
@@ -441,27 +612,37 @@ Future<void> _performTcpScan(String address, List<String> lines, void Function(S
     emit('update');
   }
 
-  // --- Phase 4: Service Banners Summary ---
-  if (portBanners.isNotEmpty) {
-    lines.add('');
-    lines.add('[PHASE] 3/3 — Service Banners');
-    emit('update');
-    for (final entry in portBanners.entries) {
-      final service = _commonPorts[entry.key] ?? 'Unknown';
-      lines.add('[BANNER] ${entry.key}/tcp ($service): ${entry.value}');
-      emit('update');
-    }
-  }
+  // --- Phase 5: Analysis & Identification ---
+  lines.add('');
+  lines.add('[PHASE] 5/5 — Analysis & Identification');
+  emit('update');
+
+  final osGuess = _inferOS(ttl: ttl, openPorts: openPorts, banners: portBanners);
+  final deviceType = _inferDeviceType(openPorts: openPorts, vendor: macVendor, os: osGuess);
+
+  lines.add('[OS]    ${osGuess ?? 'Could not determine'}');
+  lines.add('[TYPE]  $deviceType');
+  emit('update');
 
   // --- Summary ---
   lines.add('');
   lines.add('═══════════════════════════════════════════');
   lines.add('[SYSTEM] SCAN SUMMARY');
   lines.add('═══════════════════════════════════════════');
-  if (openPorts.isEmpty) {
-    lines.add('[RESULT] No open ports found on common ports.');
+  if (resolvedIp != null && resolvedIp != address) {
+    lines.add('[RESULT] Host: $address ($resolvedIp)');
   } else {
-    lines.add('[RESULT] ${openPorts.length} open port(s): ${openPorts.join(", ")}');
+    lines.add('[RESULT] Host: $address');
+  }
+  if (macAddress != null) {
+    lines.add('[RESULT] MAC:  $macAddress${macVendor != null ? ' ($macVendor)' : ''}');
+  }
+  lines.add('[RESULT] OS:   ${osGuess ?? 'Unknown'}');
+  lines.add('[RESULT] Type: $deviceType');
+  if (openPorts.isEmpty) {
+    lines.add('[RESULT] Ports: No open ports found');
+  } else {
+    lines.add('[RESULT] Ports: ${openPorts.length} open — ${openPorts.join(", ")}');
     for (final port in openPorts) {
       final service = _commonPorts[port] ?? 'Unknown';
       final banner = portBanners[port];
