@@ -24,6 +24,7 @@ class _LogsScreenState extends State<LogsScreen> {
   String _searchQuery = '';
   DeviceStatus? _statusFilter;
   final Map<String, int> _pageSizeMap = {};
+  final Map<String, DeviceStatus?> _deviceStatusFilterMap = {};
   static const int _initialPageSize = 20;
 
   List<Device> _getFilteredDevices() {
@@ -213,7 +214,18 @@ class _LogsScreenState extends State<LogsScreen> {
     final statusColor = _getDeviceStatusColor(device.status);
     final historyCount = device.history.length;
     final displayLimit = _pageSizeMap[device.id] ?? _initialPageSize;
-    final displayedHistory = device.history.reversed.take(displayLimit).toList();
+    final deviceFilter = _deviceStatusFilterMap[device.id];
+
+    // Calculate stats for this device
+    final stats = _calculateDeviceStats(device);
+
+    // Filter history for display
+    final filteredHistory = device.history.reversed.where((h) {
+      if (deviceFilter == null) return true;
+      return h.status == deviceFilter;
+    }).toList();
+
+    final displayedHistory = filteredHistory.take(displayLimit).toList();
 
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
@@ -252,10 +264,44 @@ class _LogsScreenState extends State<LogsScreen> {
         ),
         children: [
           const Divider(height: 1),
-          if (historyCount == 0)
+          // --- Statistics Row ---
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: isDark ? Colors.white.withValues(alpha: 0.02) : Colors.grey.withValues(alpha: 0.02),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _buildCompactStat('UPTIME', '${stats.uptime.toStringAsFixed(1)}%', 
+                    stats.uptime < 95 ? Colors.red : (stats.uptime < 99 ? Colors.orange : Colors.green)),
+                _buildCompactStat('AVG LATENCY', '${stats.avgLatency.toStringAsFixed(1)}ms', null),
+                _buildCompactStat('PEAK', '${stats.maxLatency.toStringAsFixed(1)}ms', 
+                    stats.maxLatency > 500 ? Colors.orange : null),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          // --- Per-Device Filter Bar ---
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildMiniFilterChip(device.id, null, 'All', Colors.blueGrey),
+                _buildMiniFilterChip(device.id, DeviceStatus.online, 'Online', Colors.green),
+                _buildMiniFilterChip(device.id, DeviceStatus.degraded, 'Degraded', Colors.orange),
+                _buildMiniFilterChip(device.id, DeviceStatus.offline, 'Offline', Colors.red),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          if (filteredHistory.isEmpty)
             Padding(
               padding: const EdgeInsets.all(24.0),
-              child: Text('No events recorded yet', style: GoogleFonts.inter(color: Colors.grey)),
+              child: Text(
+                deviceFilter == null ? 'No events recorded yet' : 'No ${deviceFilter.name} events found',
+                style: GoogleFonts.inter(color: Colors.grey),
+              ),
             )
           else ...[
             // Using Column instead of ListView to avoid Scrollable/PageStorage conflicts
@@ -271,7 +317,7 @@ class _LogsScreenState extends State<LogsScreen> {
                 }),
               ),
             ),
-            if (historyCount > displayLimit)
+            if (filteredHistory.length > displayLimit)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: TextButton.icon(
@@ -281,7 +327,7 @@ class _LogsScreenState extends State<LogsScreen> {
                     });
                   },
                   icon: const Icon(Icons.expand_more, size: 18),
-                  label: Text('Load older events (${historyCount - displayLimit} remaining)'),
+                  label: Text('Load older events (${filteredHistory.length - displayLimit} remaining)'),
                 ),
               ),
             Padding(
@@ -375,4 +421,88 @@ class _LogsScreenState extends State<LogsScreen> {
       default: return Colors.blueGrey;
     }
   }
+
+  Widget _buildMiniFilterChip(String deviceId, DeviceStatus? status, String label, Color color) {
+    final isSelected = _deviceStatusFilterMap[deviceId] == status;
+    return FilterChip(
+      selected: isSelected,
+      showCheckmark: false,
+      label: Text(
+        label,
+        style: GoogleFonts.inter(
+          fontSize: 10,
+          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+          color: isSelected ? Colors.white : color,
+        ),
+      ),
+      padding: EdgeInsets.zero,
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      selectedColor: color,
+      onSelected: (_) {
+        setState(() {
+          _deviceStatusFilterMap[deviceId] = status;
+          _pageSizeMap[deviceId] = _initialPageSize; // Reset page size on filter change
+        });
+      },
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    );
+  }
+
+  Widget _buildCompactStat(String label, String value, Color? valueColor) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: GoogleFonts.jetBrainsMono(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: valueColor ?? Theme.of(context).colorScheme.onSurface,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: GoogleFonts.inter(
+            fontSize: 9,
+            fontWeight: FontWeight.w700,
+            color: Colors.grey,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ],
+    );
+  }
+
+  _SimplifiedDeviceStats _calculateDeviceStats(Device device) {
+    if (device.history.isEmpty) return _SimplifiedDeviceStats(100, 0, 0);
+    
+    final onlineCount = device.history.where((h) => h.status == DeviceStatus.online).length;
+    final uptime = (onlineCount / device.history.length) * 100;
+    
+    double totalLatency = 0;
+    double maxLatency = 0;
+    int responded = 0;
+    
+    for (var h in device.history) {
+      if (h.latencyMs != null && h.latencyMs! > 0) {
+        totalLatency += h.latencyMs!;
+        if (h.latencyMs! > maxLatency) maxLatency = h.latencyMs!;
+        responded++;
+      }
+    }
+    
+    return _SimplifiedDeviceStats(
+      uptime,
+      responded == 0 ? 0 : totalLatency / responded,
+      maxLatency,
+    );
+  }
+}
+
+class _SimplifiedDeviceStats {
+  final double uptime;
+  final double avgLatency;
+  final double maxLatency;
+  _SimplifiedDeviceStats(this.uptime, this.avgLatency, this.maxLatency);
 }

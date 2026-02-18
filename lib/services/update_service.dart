@@ -9,14 +9,17 @@ import 'package:path_provider/path_provider.dart';
 class UpdateService {
   static const String githubOwner = 'cbl508';
   static const String githubRepo = 'PingIT';
-  static const String currentVersion = '1.3.1';
+  static const String currentVersion = '1.3.2';
 
   /// Check GitHub Releases API for a newer version.
   Future<UpdateInfo?> checkForUpdate() async {
     try {
       final response = await http.get(
         Uri.parse('https://api.github.com/repos/$githubOwner/$githubRepo/releases/latest'),
-        headers: {'Accept': 'application/vnd.github.v3+json'},
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'PingIT-Updater',
+        },
       ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode != 200) return null;
@@ -64,33 +67,42 @@ class UpdateService {
       if (await updateDir.exists()) await updateDir.delete(recursive: true);
       await updateDir.create(recursive: true);
 
+      final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
+      final sink = zipFile.openWrite();
+
       // Streaming download with progress tracking
       final client = http.Client();
       try {
         final request = http.Request('GET', Uri.parse(info.downloadUrl));
+        request.headers['User-Agent'] = 'PingIT-Updater';
+        
         final response = await client.send(request).timeout(const Duration(seconds: 120));
-        if (response.statusCode != 200) return null;
+        if (response.statusCode != 200) {
+          await sink.close();
+          return null;
+        }
 
         final contentLength = response.contentLength ?? 0;
-        final bytes = <int>[];
         int received = 0;
 
-        await for (final chunk in response.stream) {
-          bytes.addAll(chunk);
+        await response.stream.forEach((chunk) {
+          sink.add(chunk);
           received += chunk.length;
           if (contentLength > 0 && onProgress != null) {
             onProgress(received / contentLength);
           }
-        }
+        });
 
-        final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
-        await zipFile.writeAsBytes(bytes);
+        await sink.flush();
+        await sink.close();
+      } catch (e) {
+        await sink.close();
+        rethrow;
       } finally {
         client.close();
       }
 
       // Extract
-      final zipFile = File('${updateDir.path}${Platform.pathSeparator}update.zip');
       final extractDir = Directory('${updateDir.path}${Platform.pathSeparator}extracted');
       await extractDir.create(recursive: true);
 
