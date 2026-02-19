@@ -259,7 +259,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
           content: Text('Weekly report generated: ${reportFile.path}'),
           action: SnackBarAction(
             label: 'Open',
-            onPressed: () => Process.run('xdg-open', [reportFile.path]),
+            onPressed: () {
+              if (Platform.isWindows) {
+                Process.run('cmd', ['/c', 'start', '', reportFile.path]);
+              } else if (Platform.isMacOS) {
+                Process.run('open', [reportFile.path]);
+              } else {
+                Process.run('xdg-open', [reportFile.path]);
+              }
+            },
           ),
         ),
       );

@@ -5,7 +5,6 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:pingit/models/device_model.dart';
 import 'package:pingit/providers/device_provider.dart';
@@ -52,7 +51,6 @@ class DeviceListScreen extends StatefulWidget {
 class _DeviceListScreenState extends State<DeviceListScreen> {
   String _searchQuery = '';
   SortOption _sortOption = SortOption.status;
-  int _touchedIndex = -1;
   bool _isMultiSelect = false;
   final Set<String> _selectedIds = {};
   Timer? _searchDebounce;
@@ -83,7 +81,22 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
 
   void _selectAll() {
     setState(() {
-      _selectedIds.addAll(widget.devices.map((d) => d.id));
+      // Only select devices that are currently visible (matching search/status filters)
+      final visibleDevices = widget.devices.where((d) {
+        final matchesSearch =
+            d.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+            d.address.toLowerCase().contains(_searchQuery.toLowerCase());
+        bool matchesStatusFilter = true;
+        if (widget.statusFilter != null) {
+          if (widget.statusFilter == DeviceStatus.unknown) {
+            matchesStatusFilter = d.isPaused;
+          } else {
+            matchesStatusFilter = d.status == widget.statusFilter && !d.isPaused;
+          }
+        }
+        return matchesSearch && matchesStatusFilter;
+      });
+      _selectedIds.addAll(visibleDevices.map((d) => d.id));
     });
   }
 
@@ -132,29 +145,67 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
   }
 
   void _handleBulkPause(BuildContext context) {
-    context.read<DeviceProvider>().bulkPauseDevices(_selectedIds);
-    setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+    final provider = context.read<DeviceProvider>();
+    final count = _selectedIds.length;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Pause $count device${count > 1 ? 's' : ''}?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        content: Text('Monitoring will be paused for the selected devices.', style: GoogleFonts.inter()),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () {
+              provider.bulkPauseDevices(_selectedIds);
+              setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+              Navigator.pop(dialogContext);
+            },
+            child: const Text('Pause'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleBulkResume(BuildContext context) {
-    context.read<DeviceProvider>().bulkResumeDevices(_selectedIds);
-    setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+    final provider = context.read<DeviceProvider>();
+    final count = _selectedIds.length;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Resume $count device${count > 1 ? 's' : ''}?', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+        content: Text('Monitoring will resume for the selected devices.', style: GoogleFonts.inter()),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () {
+              provider.bulkResumeDevices(_selectedIds);
+              setState(() { _isMultiSelect = false; _selectedIds.clear(); });
+              Navigator.pop(dialogContext);
+            },
+            child: const Text('Resume'),
+          ),
+        ],
+      ),
+    );
   }
-  
+
+  void _completeBulkDelete(DeviceProvider provider, BuildContext dialogContext) {
+    provider.bulkRemoveDevices(_selectedIds);
+    setState(() {
+      _isMultiSelect = false;
+      _selectedIds.clear();
+    });
+    Navigator.pop(dialogContext);
+  }
+
   void _handleBulkDelete(BuildContext context) {
      final provider = context.read<DeviceProvider>();
      showDialog(
       context: context,
       builder: (dialogContext) => CallbackShortcuts(
         bindings: {
-          const SingleActivator(LogicalKeyboardKey.enter): () {
-            provider.bulkRemoveDevices(_selectedIds);
-            setState(() {
-               _isMultiSelect = false;
-               _selectedIds.clear();
-            });
-            Navigator.pop(dialogContext);
-          },
+          const SingleActivator(LogicalKeyboardKey.enter): () => _completeBulkDelete(provider, dialogContext),
         },
         child: Focus(
           autofocus: true,
@@ -164,14 +215,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             actions: [
               TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
               TextButton(
-                onPressed: () {
-                  provider.bulkRemoveDevices(_selectedIds);
-                  setState(() {
-                    _isMultiSelect = false;
-                    _selectedIds.clear();
-                  });
-                  Navigator.pop(dialogContext);
-                },
+                onPressed: () => _completeBulkDelete(provider, dialogContext),
                 child: const Text('Delete', style: TextStyle(color: Colors.red)),
               ),
             ],
@@ -180,19 +224,19 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
       ),
     );
   }
-  
+
   void _handleBulkMove(BuildContext context) {
     final provider = context.read<DeviceProvider>();
     showDialog(
       context: context,
-      builder: (context) => SimpleDialog(
+      builder: (dialogContext) => SimpleDialog(
         title: Text('Move to Group', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
         children: [
           SimpleDialogOption(
             onPressed: () {
               provider.bulkMoveDevicesToGroup(_selectedIds, null);
               setState(() { _isMultiSelect = false; _selectedIds.clear(); });
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
             },
             child: const Text('Unassigned'),
           ),
@@ -200,7 +244,7 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             onPressed: () {
               provider.bulkMoveDevicesToGroup(_selectedIds, g.id);
               setState(() { _isMultiSelect = false; _selectedIds.clear(); });
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
             },
             child: Text(g.name),
           )),
@@ -534,347 +578,6 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
     );
   }
 
-  Widget _buildDashboardHUD(BuildContext context) {
-    final online = widget.devices
-        .where((d) => d.status == DeviceStatus.online && !d.isPaused)
-        .length;
-    final offline = widget.devices
-        .where((d) => d.status == DeviceStatus.offline && !d.isPaused)
-        .length;
-    final degraded = widget.devices
-        .where((d) => d.status == DeviceStatus.degraded && !d.isPaused)
-        .length;
-    final paused = widget.devices.where((d) => d.isPaused).length;
-    final total = widget.devices.length;
-
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    // Data for Widgets
-    final topLatency = widget.devices
-        .where((d) => !d.isPaused && d.lastLatency != null)
-        .toList()
-      ..sort((a, b) => (b.lastLatency ?? 0).compareTo(a.lastLatency ?? 0));
-    final top5 = topLatency.take(5).toList();
-
-    return Column(
-      children: [
-        // --- Top Gauges and HUD ---
-        Container(
-          margin: const EdgeInsets.all(16.0),
-          padding: const EdgeInsets.all(24.0),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardTheme.color,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.05),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'INFRASTRUCTURE HEALTH',
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                  letterSpacing: 1.2,
-                ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (total > 0)
-                    _buildPieChart(online, offline, degraded, paused, total),
-                  Expanded(
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            _buildHUDItem('ACTIVE', '$online', const Color(0xFF10B981), Icons.check_circle_outline,
-                                onTap: () => _setStatusFilter(DeviceStatus.online)),
-                            const SizedBox(width: 16),
-                            _buildHUDItem('DEGRADED', '$degraded', const Color(0xFFF59E0B), Icons.warning_amber_rounded,
-                                onTap: () => _setStatusFilter(DeviceStatus.degraded)),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
-                        Row(
-                          children: [
-                            _buildHUDItem('CRITICAL', '$offline', const Color(0xFFEF4444), Icons.error_outline,
-                                onTap: () => _setStatusFilter(DeviceStatus.offline)),
-                            const SizedBox(width: 16),
-                            _buildHUDItem('PAUSED', '$paused', const Color(0xFF94A3B8), Icons.pause_circle_outline,
-                                onTap: () => _setStatusFilter(DeviceStatus.unknown)),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-
-        // --- Grid Widgets (Latency & Recent) ---
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final isWide = constraints.maxWidth > 700;
-              return isWide 
-                ? Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(child: _buildLatencyWidget(top5)),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildRecentEventsWidget()),
-                    ],
-                  )
-                : Column(
-                    children: [
-                      _buildLatencyWidget(top5),
-                      const SizedBox(height: 16),
-                      _buildRecentEventsWidget(),
-                    ],
-                  );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildPieChart(int online, int offline, int degraded, int paused, int total) {
-    final sectionStatuses = [DeviceStatus.online, DeviceStatus.offline, DeviceStatus.degraded, DeviceStatus.unknown];
-    return GestureDetector(
-      onTap: () {
-        if (_touchedIndex >= 0 && _touchedIndex < sectionStatuses.length) {
-          _setStatusFilter(sectionStatuses[_touchedIndex]);
-        }
-      },
-      child: Container(
-        width: 140,
-        height: 140,
-        margin: const EdgeInsets.only(right: 32),
-        child: Stack(
-          children: [
-            PieChart(
-              PieChartData(
-                pieTouchData: PieTouchData(
-                  touchCallback: (FlTouchEvent event, pieTouchResponse) {
-                    setState(() {
-                      if (!event.isInterestedForInteractions ||
-                          pieTouchResponse == null ||
-                          pieTouchResponse.touchedSection == null) {
-                        _touchedIndex = -1;
-                        return;
-                      }
-                      _touchedIndex =
-                          pieTouchResponse.touchedSection!.touchedSectionIndex;
-                    });
-                    if (event is FlTapUpEvent &&
-                        pieTouchResponse?.touchedSection != null) {
-                      final idx = pieTouchResponse!.touchedSection!.touchedSectionIndex;
-                      if (idx >= 0 && idx < sectionStatuses.length) {
-                        _setStatusFilter(sectionStatuses[idx]);
-                      }
-                    }
-                  },
-                ),
-                sectionsSpace: 4,
-                centerSpaceRadius: 40,
-                sections: [
-                  _buildPieSection(0, online.toDouble(), const Color(0xFF10B981), 'Online', total),
-                  _buildPieSection(1, offline.toDouble(), const Color(0xFFEF4444), 'Offline', total),
-                  _buildPieSection(2, degraded.toDouble(), const Color(0xFFF59E0B), 'Degraded', total),
-                  _buildPieSection(3, paused.toDouble(), const Color(0xFF94A3B8), 'Paused', total),
-                ],
-              ),
-            ),
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('$total', style: GoogleFonts.inter(fontSize: 24, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface)),
-                  Text('NODES', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLatencyWidget(List<Device> top5) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.speed, size: 16, color: Colors.orange.shade400),
-              const SizedBox(width: 8),
-              Text('TOP LATENCY (ms)', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.grey, letterSpacing: 1)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (top5.isEmpty)
-            Center(child: Text('No data', style: GoogleFonts.inter(fontSize: 12, color: Colors.grey)))
-          else
-            ...top5.map((d) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
-                children: [
-                  Expanded(child: Text(d.name, style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
-                  Text('${d.lastLatency?.toStringAsFixed(1)}', style: GoogleFonts.jetBrainsMono(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.orange)),
-                ],
-              ),
-            )),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRecentEventsWidget() {
-    final allEvents = widget.devices.expand((d) => d.history.map((h) => (d, h))).toList()
-      ..sort((a, b) => b.$2.timestamp.compareTo(a.$2.timestamp));
-    final recent = allEvents.take(5).toList();
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardTheme.color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.history, size: 16, color: Colors.blue),
-              const SizedBox(width: 8),
-              Text('RECENT EVENTS', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.grey, letterSpacing: 1)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          if (recent.isEmpty)
-            Center(child: Text('No events', style: GoogleFonts.inter(fontSize: 12, color: Colors.grey)))
-          else
-            ...recent.map((item) {
-              final d = item.$1;
-              final h = item.$2;
-              final color = h.status == DeviceStatus.online ? Colors.green : (h.status == DeviceStatus.offline ? Colors.red : Colors.orange);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Row(
-                  children: [
-                    Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(d.name, style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis)),
-                    Text(DateFormat('HH:mm:ss').format(h.timestamp), style: GoogleFonts.jetBrainsMono(fontSize: 10, color: Colors.grey)),
-                  ],
-                ),
-              );
-            }),
-        ],
-      ),
-    );
-  }
-
-  PieChartSectionData _buildPieSection(int index, double value, Color color, String label, int total) {
-    final isTouched = index == _touchedIndex;
-    final isFiltered = widget.statusFilter != null;
-    final fontSize = isTouched ? 14.0 : 0.0;
-    final radius = isTouched ? 45.0 : 35.0;
-    final percentage = total > 0 ? (value / total * 100).toStringAsFixed(0) : '0';
-
-    return PieChartSectionData(
-      color: isFiltered && !isTouched ? color.withValues(alpha: 0.3) : color,
-      value: value,
-      title: '$percentage%',
-      radius: radius,
-      titleStyle: GoogleFonts.inter(fontSize: fontSize, fontWeight: FontWeight.bold, color: Colors.white),
-      badgeWidget: isTouched ? _buildHoverTooltip(label, value.toInt()) : null,
-      badgePositionPercentageOffset: .98,
-    );
-  }
-
-  Widget _buildHoverTooltip(String label, int count) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(4),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.2), blurRadius: 4)],
-      ),
-      child: Text('$label: $count', style: GoogleFonts.inter(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-    );
-  }
-
-  Widget _buildLegendItem(Color color, String label) {
-    return Row(
-      children: [
-        Container(width: 12, height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 8),
-        Text(label, style: GoogleFonts.inter(fontWeight: FontWeight.w500, fontSize: 12)),
-      ],
-    );
-  }
-
-  Widget _buildHUDItem(String label, String value, Color color, IconData icon, {VoidCallback? onTap}) {
-    final isActive = widget.statusFilter != null;
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: isActive ? 0.04 : 0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: color.withValues(alpha: 0.15)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(icon, size: 16, color: color),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(label, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w800, color: color, letterSpacing: 0.5), overflow: TextOverflow.ellipsis),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(value, style: GoogleFonts.jetBrainsMono(fontSize: 26, fontWeight: FontWeight.w700, color: Theme.of(context).colorScheme.onSurface)),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   Widget _buildGroup(BuildContext context, DeviceGroup? group) {
     // Need to trigger saveAll when group expansion changes
     final provider = context.read<DeviceProvider>();
@@ -939,39 +642,6 @@ class _DeviceListScreenState extends State<DeviceListScreen> {
             ),
         ],
       ),
-    );
-  }
-
-  Widget _buildPinnedSection(BuildContext context) {
-    final pinned = widget.devices.where((d) => d.isPinned).toList();
-    if (pinned.isEmpty) return const SizedBox.shrink();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            children: [
-              Icon(Icons.push_pin, size: 18, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(width: 12),
-              Text(
-                'PINNED NODES',
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ],
-          ),
-        ),
-        ...pinned.map((d) => _buildNodeTile(d)),
-        const SizedBox(height: 16),
-        const Divider(),
-        const SizedBox(height: 16),
-      ],
     );
   }
 

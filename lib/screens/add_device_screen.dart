@@ -56,6 +56,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   late CheckType _selectedCheckType;
   DateTime? _maintenanceUntil;
   _Preset? _selectedPreset;
+
+  // Advanced Monitoring & Integrations state
+  late TextEditingController _keywordController;
+  late TextEditingController _sslExpiryWarningDaysController;
+  late TextEditingController _dnsExpectedIpController;
+  late TextEditingController _discordWebhookUrlController;
+  late TextEditingController _slackWebhookUrlController;
   
   // Connection Testing State
   bool _isTesting = false;
@@ -91,6 +98,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _selectedType = widget.device?.type ?? DeviceType.server;
     _selectedCheckType = widget.device?.checkType ?? CheckType.icmp;
     _maintenanceUntil = widget.device?.maintenanceUntil;
+    _keywordController = TextEditingController(text: widget.device?.keyword ?? '');
+    _sslExpiryWarningDaysController = TextEditingController(
+      text: widget.device?.sslExpiryWarningDays?.toString() ?? '14',
+    );
+    _dnsExpectedIpController = TextEditingController(text: widget.device?.dnsExpectedIp ?? '');
+    _discordWebhookUrlController = TextEditingController(text: widget.device?.discordWebhookUrl ?? '');
+    _slackWebhookUrlController = TextEditingController(text: widget.device?.slackWebhookUrl ?? '');
   }
 
   @override
@@ -101,6 +115,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     _portController.dispose();
     _latencyThresholdController.dispose();
     _packetLossThresholdController.dispose();
+    _keywordController.dispose();
+    _sslExpiryWarningDaysController.dispose();
+    _dnsExpectedIpController.dispose();
+    _discordWebhookUrlController.dispose();
+    _slackWebhookUrlController.dispose();
     super.dispose();
   }
 
@@ -191,6 +210,12 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       final latencyThreshold = double.tryParse(_latencyThresholdController.text.trim());
       final packetLossThreshold = double.tryParse(_packetLossThresholdController.text.trim());
 
+      final keyword = _keywordController.text.trim().isEmpty ? null : _keywordController.text.trim();
+      final sslExpiryWarningDays = int.tryParse(_sslExpiryWarningDaysController.text.trim());
+      final dnsExpectedIp = _dnsExpectedIpController.text.trim().isEmpty ? null : _dnsExpectedIpController.text.trim();
+      final discordWebhookUrl = _discordWebhookUrlController.text.trim().isEmpty ? null : _discordWebhookUrlController.text.trim();
+      final slackWebhookUrl = _slackWebhookUrlController.text.trim().isEmpty ? null : _slackWebhookUrlController.text.trim();
+
       if (widget.device != null) {
         widget.device!.name = trimmedName;
         widget.device!.address = trimmedAddress;
@@ -204,6 +229,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         widget.device!.latencyThreshold = latencyThreshold;
         widget.device!.packetLossThreshold = packetLossThreshold;
         widget.device!.maintenanceUntil = _maintenanceUntil;
+        widget.device!.keyword = keyword;
+        widget.device!.sslExpiryWarningDays = sslExpiryWarningDays;
+        widget.device!.dnsExpectedIp = dnsExpectedIp;
+        widget.device!.discordWebhookUrl = discordWebhookUrl;
+        widget.device!.slackWebhookUrl = slackWebhookUrl;
         Navigator.of(context).pop(widget.device);
       } else {
         final newDevice = Device(
@@ -219,6 +249,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           latencyThreshold: latencyThreshold,
           packetLossThreshold: packetLossThreshold,
           maintenanceUntil: _maintenanceUntil,
+          keyword: keyword,
+          sslExpiryWarningDays: sslExpiryWarningDays,
+          dnsExpectedIp: dnsExpectedIp,
+          discordWebhookUrl: discordWebhookUrl,
+          slackWebhookUrl: slackWebhookUrl,
         );
         Navigator.of(context).pop(newDevice);
       }
@@ -226,9 +261,10 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   }
 
   void _confirmDelete() {
+    final outerNavigator = Navigator.of(context);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(
           'Delete Host?',
           style: GoogleFonts.inter(fontWeight: FontWeight.bold),
@@ -239,13 +275,13 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () {
-              Navigator.pop(context);
-              Navigator.of(context).pop('delete');
+              Navigator.pop(dialogContext);
+              outerNavigator.pop('delete');
             },
             child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
@@ -403,11 +439,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                                 _selectedType = preset.deviceType;
                                 _portController.text = '80';
                               } else {
-                                _nameController.clear();
-                                _addressController.clear();
-                                _selectedCheckType = CheckType.icmp;
-                                _selectedType = DeviceType.server;
-                                _portController.text = '80';
+                                // Switching to "Custom" — leave existing values intact
                               }
                               _testResult = null;
                               _testStatusColor = null;
@@ -427,7 +459,6 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                         _addressController,
                         'Address',
                         Icons.link,
-                        enabled: !isEditing,
                         isRequired: true,
                       ),
                     ],
@@ -695,7 +726,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     children: [
                       if (_selectedCheckType == CheckType.http) ...[
                         TextFormField(
-                          initialValue: widget.device?.keyword,
+                          controller: _keywordController,
                           style: GoogleFonts.inter(),
                           decoration: InputDecoration(
                             labelText: 'Content Keyword Match',
@@ -703,11 +734,10 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                             helperText: 'Alert if this text is missing from the response body',
                           ),
-                          onChanged: (v) => widget.device?.keyword = v,
                         ),
                         const SizedBox(height: 16),
                         TextFormField(
-                          initialValue: widget.device?.sslExpiryWarningDays?.toString() ?? '14',
+                          controller: _sslExpiryWarningDaysController,
                           keyboardType: TextInputType.number,
                           style: GoogleFonts.inter(),
                           decoration: InputDecoration(
@@ -716,12 +746,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                             helperText: 'Alert when certificate has fewer than X days left',
                           ),
-                          onChanged: (v) => widget.device?.sslExpiryWarningDays = int.tryParse(v),
                         ),
                         const SizedBox(height: 16),
                       ],
                       TextFormField(
-                        initialValue: widget.device?.dnsExpectedIp,
+                        controller: _dnsExpectedIpController,
                         style: GoogleFonts.inter(),
                         decoration: InputDecoration(
                           labelText: 'Expected DNS IP',
@@ -729,7 +758,6 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           helperText: 'Verify that resolution matches this IP',
                         ),
-                        onChanged: (v) => widget.device?.dnsExpectedIp = v,
                       ),
                     ],
                   ),
@@ -740,25 +768,23 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                     icon: Icons.integration_instructions_outlined,
                     children: [
                       TextFormField(
-                        initialValue: widget.device?.discordWebhookUrl,
+                        controller: _discordWebhookUrlController,
                         style: GoogleFonts.inter(),
                         decoration: InputDecoration(
                           labelText: 'Discord Webhook URL (Node Specific)',
                           prefixIcon: const Icon(Icons.discord),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        onChanged: (v) => widget.device?.discordWebhookUrl = v,
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
-                        initialValue: widget.device?.slackWebhookUrl,
+                        controller: _slackWebhookUrlController,
                         style: GoogleFonts.inter(),
                         decoration: InputDecoration(
                           labelText: 'Slack Webhook URL (Node Specific)',
                           prefixIcon: const Icon(Icons.alternate_email),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        onChanged: (v) => widget.device?.slackWebhookUrl = v,
                       ),
                     ],
                   ),

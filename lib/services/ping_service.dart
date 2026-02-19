@@ -132,15 +132,17 @@ class PingService {
   }
 
   Future<DateTime?> _checkSslExpiry(String address) async {
+    SecureSocket? socket;
     try {
       final cleanHost = address.replaceFirst(RegExp(r'^https?://'), '').split('/').first.split(':').first;
-      final socket = await SecureSocket.connect(cleanHost, 443, timeout: const Duration(seconds: 5));
+      socket = await SecureSocket.connect(cleanHost, 443, timeout: const Duration(seconds: 5));
       final dynamic cert = socket.peerCertificate;
       final DateTime? expiry = cert?.end;
-      await socket.close();
       return expiry;
     } catch (_) {
       return null;
+    } finally {
+      await socket?.close();
     }
   }
 

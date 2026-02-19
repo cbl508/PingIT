@@ -105,15 +105,8 @@ class DeviceProvider extends ChangeNotifier {
         _groups = await _dbService.getAllGroups();
       }
 
-      // Restore runtime state
+      // Clear expired maintenance windows (status already restored in getAllDevices)
       for (var device in _devices) {
-        if (device.history.isNotEmpty) {
-          final last = device.history.last;
-          device.status = last.status;
-          device.lastLatency = last.latencyMs;
-          device.packetLoss = last.packetLoss;
-          device.lastResponseCode = last.responseCode;
-        }
         if (device.maintenanceUntil != null && DateTime.now().isAfter(device.maintenanceUntil!)) {
           device.maintenanceUntil = null;
         }
@@ -178,6 +171,8 @@ class DeviceProvider extends ChangeNotifier {
     notifyListeners(); 
 
     try {
+      final checkedDevices = <Device>{};
+
       await _pingService.pingAllDevices(
         _devices,
         onStatusChanged: (d, oldS, newS) {
@@ -218,14 +213,14 @@ class DeviceProvider extends ChangeNotifier {
           }
         },
         onResult: (device, history) async {
+          checkedDevices.add(device);
           await _dbService.addHistoryEntry(device.id, history);
-          // Prune history periodically or on each entry (prune is fast in SQLite)
           await _dbService.pruneHistory(device.id, device.maxHistory);
         },
       );
 
-      // Save updated device states (status, last latency, etc.)
-      for (final d in _devices) {
+      // Only save devices that were actually checked in this cycle
+      for (final d in checkedDevices) {
         await _dbService.saveDevice(d);
       }
 
@@ -234,14 +229,22 @@ class DeviceProvider extends ChangeNotifier {
       _log.error('Failed to update statuses', data: {'error': '$e'});
     } finally {
       _isPolling = false;
+      notifyListeners();
     }
   }
 
   // --- CRUD Operations ---
 
+  /// Wraps a DB future with error logging to prevent silent failures.
+  void _persist(Future<void> Function() operation, String description) {
+    operation().catchError((e) {
+      _log.error('DB write failed: $description', data: {'error': '$e'});
+    });
+  }
+
   void addDevice(Device device) {
     _devices.add(device);
-    _dbService.saveDevice(device);
+    _persist(() => _dbService.saveDevice(device), 'addDevice(${device.name})');
     notifyListeners();
   }
 
@@ -249,7 +252,7 @@ class DeviceProvider extends ChangeNotifier {
     final index = _devices.indexWhere((d) => d.id == device.id);
     if (index != -1) {
       _devices[index] = device;
-      _dbService.saveDevice(device);
+      _persist(() => _dbService.saveDevice(device), 'updateDevice(${device.name})');
       notifyListeners();
     }
   }
@@ -257,14 +260,14 @@ class DeviceProvider extends ChangeNotifier {
   void removeDevice(Device device) {
     _devices.remove(device);
     _cleanOrphanedParents();
-    _dbService.deleteDevice(device.id);
+    _persist(() => _dbService.deleteDevice(device.id), 'removeDevice(${device.name})');
     notifyListeners();
   }
 
   void bulkRemoveDevices(Set<String> ids) {
     for (var id in ids) {
       _devices.removeWhere((d) => d.id == id);
-      _dbService.deleteDevice(id);
+      _persist(() => _dbService.deleteDevice(id), 'bulkRemoveDevice($id)');
     }
     _cleanOrphanedParents();
     notifyListeners();
@@ -274,7 +277,7 @@ class DeviceProvider extends ChangeNotifier {
     for (var d in _devices) {
       if (ids.contains(d.id)) {
         d.isPaused = true;
-        _dbService.saveDevice(d);
+        _persist(() => _dbService.saveDevice(d), 'bulkPause(${d.name})');
       }
     }
     notifyListeners();
@@ -284,7 +287,7 @@ class DeviceProvider extends ChangeNotifier {
     for (var d in _devices) {
       if (ids.contains(d.id)) {
         d.isPaused = false;
-        _dbService.saveDevice(d);
+        _persist(() => _dbService.saveDevice(d), 'bulkResume(${d.name})');
       }
     }
     notifyListeners();
@@ -294,32 +297,32 @@ class DeviceProvider extends ChangeNotifier {
     for (var d in _devices) {
       if (ids.contains(d.id)) {
         d.groupId = groupId;
-        _dbService.saveDevice(d);
+        _persist(() => _dbService.saveDevice(d), 'bulkMove(${d.name})');
       }
     }
     notifyListeners();
   }
 
   void addGroup(String name) {
-    final g = DeviceGroup(id: DateTime.now().toString(), name: name);
+    final g = DeviceGroup(id: DateTime.now().microsecondsSinceEpoch.toString(), name: name);
     _groups.add(g);
-    _dbService.saveGroup(g);
+    _persist(() => _dbService.saveGroup(g), 'addGroup($name)');
     notifyListeners();
   }
 
   void updateGroup(DeviceGroup group, String newName) {
     group.name = newName;
-    _dbService.saveGroup(group);
+    _persist(() => _dbService.saveGroup(group), 'updateGroup($newName)');
     notifyListeners();
   }
 
   void removeGroup(DeviceGroup group) {
     _groups.remove(group);
-    _dbService.deleteGroup(group.id);
+    _persist(() => _dbService.deleteGroup(group.id), 'removeGroup(${group.name})');
     for (var device in _devices) {
       if (device.groupId == group.id) {
         device.groupId = null;
-        _dbService.saveDevice(device);
+        _persist(() => _dbService.saveDevice(device), 'unassignDevice(${device.name})');
       }
     }
     notifyListeners();
@@ -386,44 +389,19 @@ class DeviceProvider extends ChangeNotifier {
 
   Future<void> _flushPendingSaves() async {
     _saveDebounceTimer?.cancel();
-    if (_isSaving) return;
+    if (_isSaving) {
+      _pendingSave = true;
+      return;
+    }
 
     _isSaving = true;
     try {
-      // In SQLite mode, we only need to save the *latest* history entry for devices that updated.
-      // But _pingService appends to list.
-      // We will iterate devices and save their *latest* history entry if it's not in DB yet?
-      // Actually simpler: just save the device record (status/latency) which is cheap.
-      // History insert *should* happen in _pingService really, but we'll do it here for now.
-      // We'll iterate and check if the last item is newer than what we think? 
-      // Or just assume the polling loop added one item.
-      
-      for (final d in _devices) {
-        // Update device status/latency fields
-        await _dbService.saveDevice(d); 
-        
-        // Save the *latest* history item if it exists
-        if (d.history.isNotEmpty) {
-           // This is slightly inefficient (potential duplicate insert attempt), 
-           // but `addHistoryEntry` is just an INSERT.
-           // A better way is to have PingService return the new history item and we insert it then.
-           // For now, let's rely on the fact that we only really need to persist the *latest* state for the UI,
-           // and history accumulation might need a refactor of PingService later.
-           
-           // CRITICAL: We MUST persist history for the graphs to work on reload.
-           // We will take the last item and insert it.
-           // Ideally we track which ones are new.
-           
-           // Let's assume we insert the last one.
-           // If we poll every 10s, and save every 5s, we might double insert?
-           // No, auto-increment ID on history table handles uniqueness of the ROW, 
-           // but we might duplicate the DATA.
-           
-           // We'll leave history persistence to a specific "onResult" refactor in next step.
-           // For now, this just saves device state (Online/Offline) which is the most critical.
-           // History might be lost on crash until we fix this in next step.
+      do {
+        _pendingSave = false;
+        for (final d in _devices) {
+          await _dbService.saveDevice(d);
         }
-      }
+      } while (_pendingSave);
     } catch (e) {
       _log.error('Failed to persist data', data: {'error': '$e'});
     } finally {

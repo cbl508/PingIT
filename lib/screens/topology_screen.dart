@@ -110,8 +110,8 @@ class _TopologyScreenState extends State<TopologyScreen>
           setState(() {
             final box = context.findRenderObject() as RenderBox;
             final localPos = box.globalToLocal(details.offset);
-            device.topologyX = localPos.dx;
-            device.topologyY = localPos.dy;
+            device.topologyX = localPos.dx.clamp(0, box.size.width - 120);
+            device.topologyY = localPos.dy.clamp(0, box.size.height - 80);
           });
           // Save directly via provider
           context.read<DeviceProvider>().saveAll();
@@ -314,5 +314,10 @@ class TopologyPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant TopologyPainter oldDelegate) => true;
+  bool shouldRepaint(covariant TopologyPainter oldDelegate) {
+    return devices != oldDelegate.devices ||
+        connectingSource != oldDelegate.connectingSource ||
+        mousePos != oldDelegate.mousePos ||
+        isDark != oldDelegate.isDark;
+  }
 }

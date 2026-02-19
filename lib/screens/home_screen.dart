@@ -40,6 +40,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!mounted) return;
     final provider = context.read<DeviceProvider>();
     if (state == AppLifecycleState.resumed) {
       provider.startPolling();
@@ -47,22 +48,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       provider.stopPolling();
-      // provider.saveAll(immediate: true); // DB handles persistence now
     }
   }
 
-  void _navigateToAddDeviceScreen(BuildContext context, {Device? existingDevice}) async {
+  void _navigateToAddDeviceScreen(BuildContext context, {Device? existingDevice, Device? prefillDevice}) async {
     final provider = context.read<DeviceProvider>();
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => AddDeviceScreen(
-          device: existingDevice,
+          device: existingDevice ?? prefillDevice,
           groups: provider.groups,
           existingDevices: provider.devices,
         ),
       ),
     );
+
+    if (!mounted) return;
 
     if (result == 'delete' && existingDevice != null) {
       provider.removeDevice(existingDevice);
@@ -88,90 +90,97 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       ),
     );
 
+    if (!mounted) return;
+
     if (result == 'delete') {
       provider.removeDevice(device);
     } else if (result is Device && result.id != device.id) {
       // Clone result — add as new device
       provider.addDevice(result);
-    } else {
-      // provider.saveAll(); // DB handles persistence now
-      provider.updateDevice(device); 
     }
   }
 
   void _addGroup(BuildContext context) {
     final controller = TextEditingController();
-    void doCreate() {
-      if (controller.text.isNotEmpty) {
-        context.read<DeviceProvider>().addGroup(controller.text);
-        Navigator.pop(context);
-      }
-    }
+    final provider = context.read<DeviceProvider>();
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'New Infrastructure Group',
-          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'e.g., London Data Center',
+      builder: (dialogContext) {
+        void doCreate() {
+          if (controller.text.isNotEmpty) {
+            provider.addGroup(controller.text);
+            Navigator.pop(dialogContext);
+          }
+        }
+
+        return AlertDialog(
+          title: Text(
+            'New Infrastructure Group',
+            style: GoogleFonts.inter(fontWeight: FontWeight.bold),
           ),
-          style: GoogleFonts.inter(),
-          onSubmitted: (_) => doCreate(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              hintText: 'e.g., London Data Center',
+            ),
+            style: GoogleFonts.inter(),
+            onSubmitted: (_) => doCreate(),
           ),
-          TextButton(
-            onPressed: doCreate,
-            child: const Text('Create Group'),
-          ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: doCreate,
+              child: const Text('Create Group'),
+            ),
+          ],
+        );
+      },
     );
   }
 
   void _renameGroup(BuildContext context, DeviceGroup group) {
     final controller = TextEditingController(text: group.name);
-    void doRename() {
-      if (controller.text.isNotEmpty) {
-        context.read<DeviceProvider>().updateGroup(group, controller.text);
-        Navigator.pop(context);
-      }
-    }
+    final provider = context.read<DeviceProvider>();
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          'Rename Group',
-          style: GoogleFonts.inter(fontWeight: FontWeight.bold),
-        ),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(hintText: 'Group Name'),
-          style: GoogleFonts.inter(),
-          onSubmitted: (_) => doRename(),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+      builder: (dialogContext) {
+        void doRename() {
+          if (controller.text.isNotEmpty) {
+            provider.updateGroup(group, controller.text);
+            Navigator.pop(dialogContext);
+          }
+        }
+
+        return AlertDialog(
+          title: Text(
+            'Rename Group',
+            style: GoogleFonts.inter(fontWeight: FontWeight.bold),
           ),
-          TextButton(
-            onPressed: doRename,
-            child: const Text('Save'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: 'Group Name'),
+            style: GoogleFonts.inter(),
+            onSubmitted: (_) => doRename(),
           ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: doRename,
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -300,7 +309,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                             onAddDevice: () => _navigateToAddDeviceScreen(context),
                             onQuickScan: (addr) => _navigateToAddDeviceScreen(
                               context,
-                              existingDevice: Device(name: 'New Node', address: addr),
+                              prefillDevice: Device(name: 'New Node', address: addr),
                             ),
                             onAddGroup: () => _addGroup(context),
                             onRenameGroup: (g) => _renameGroup(context, g),

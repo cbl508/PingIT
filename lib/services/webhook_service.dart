@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:pingit/models/device_model.dart';
+import 'package:pingit/services/update_service.dart';
 
 enum WebhookType { generic, slack, discord, telegram }
 
@@ -213,7 +214,7 @@ class WebhookService {
                 if (device.lastLatency != null)
                   {'name': 'Telemetry', 'value': '${device.lastLatency!.toStringAsFixed(1)}ms latency', 'inline': false},
               ],
-              'footer': {'text': 'PingIT v1.3.2 • Network Oversight'},
+              'footer': {'text': 'PingIT v${UpdateService.currentVersion} • Network Oversight'},
               'timestamp': DateTime.now().toUtc().toIso8601String(),
             },
           ],

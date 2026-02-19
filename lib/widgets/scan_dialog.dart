@@ -238,8 +238,12 @@ void showScanInputDialog({
 }) {
   final controller = TextEditingController(text: initialAddress ?? '');
 
-  void startScan(ScanType type, BuildContext dialogContext) async {
-    if (controller.text.trim().isEmpty) return;
+  String? errorText;
+  void startScan(ScanType type, BuildContext dialogContext, void Function(void Function()) setDialogState) async {
+    if (controller.text.trim().isEmpty) {
+      setDialogState(() => errorText = 'Please enter an address');
+      return;
+    }
     final addr = controller.text.trim();
 
     // For deep scan, check required tools before proceeding
@@ -265,55 +269,61 @@ void showScanInputDialog({
 
   showDialog(
     context: context,
-    builder: (dialogContext) => CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.enter): () => startScan(ScanType.quick, dialogContext),
-      },
-      child: Focus(
-        autofocus: true,
-        child: AlertDialog(
-          title: Text('Network Scan', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Enter a hostname or IP address to scan.',
-                style: GoogleFonts.inter(fontSize: 13, color: Colors.grey),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: controller,
-                autofocus: true,
-                style: GoogleFonts.jetBrainsMono(),
-                decoration: const InputDecoration(
-                  hintText: 'e.g. 192.168.1.1 or google.com',
-                  prefixIcon: Icon(Icons.public),
-                  border: OutlineInputBorder(),
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.enter): () => startScan(ScanType.quick, dialogContext, setDialogState),
+        },
+        child: Focus(
+          autofocus: true,
+          child: AlertDialog(
+            title: Text('Network Scan', style: GoogleFonts.inter(fontWeight: FontWeight.bold)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Enter a hostname or IP address to scan.',
+                  style: GoogleFonts.inter(fontSize: 13, color: Colors.grey),
                 ),
-                onSubmitted: (_) => startScan(ScanType.quick, dialogContext),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  style: GoogleFonts.jetBrainsMono(),
+                  decoration: InputDecoration(
+                    hintText: 'e.g. 192.168.1.1 or google.com',
+                    prefixIcon: const Icon(Icons.public),
+                    border: const OutlineInputBorder(),
+                    errorText: errorText,
+                  ),
+                  onChanged: (_) {
+                    if (errorText != null) setDialogState(() => errorText = null);
+                  },
+                  onSubmitted: (_) => startScan(ScanType.quick, dialogContext, setDialogState),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Quick Scan: Ports, DNS, MAC, OS & device fingerprinting (no external tools)\nDeep Scan: Full enumeration, OS, MAC, scripts, traceroute (requires nmap)',
+                  style: GoogleFonts.inter(fontSize: 11, color: Colors.grey),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
               ),
-              const SizedBox(height: 12),
-              Text(
-                'Quick Scan: Ports, DNS, MAC, OS & device fingerprinting (no external tools)\nDeep Scan: Full enumeration, OS, MAC, scripts, traceroute (requires nmap)',
-                style: GoogleFonts.inter(fontSize: 11, color: Colors.grey),
+              OutlinedButton(
+                onPressed: () => startScan(ScanType.quick, dialogContext, setDialogState),
+                child: const Text('Quick Scan'),
+              ),
+              OutlinedButton(
+                onPressed: () => startScan(ScanType.deep, dialogContext, setDialogState),
+                child: const Text('Deep Scan'),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            OutlinedButton(
-              onPressed: () => startScan(ScanType.quick, dialogContext),
-              child: const Text('Quick Scan'),
-            ),
-            OutlinedButton(
-              onPressed: () => startScan(ScanType.deep, dialogContext),
-              child: const Text('Deep Scan'),
-            ),
-          ],
         ),
       ),
     ),
@@ -342,7 +352,7 @@ Future<List<String>?> _runBuiltInScan({
   required String address,
   bool showAddButton = false,
 }) async {
-  final StreamController<String> logStream = StreamController<String>();
+  final StreamController<String> logStream = StreamController<String>.broadcast();
   final List<String> lines = [
     '[SYSTEM] Initializing Quick Scan...',
     '[TARGET] $address',
@@ -450,7 +460,7 @@ Future<List<String>?> _runBuiltInScan({
                   onPressed: () => Navigator.pop(dialogContext),
                   child: const Text('DISMISS'),
                 ),
-                if (showAddButton && snapshot.data == 'DONE')
+                if (showAddButton && isDone)
                   FilledButton.icon(
                     onPressed: () {
                       addNode = true;
@@ -659,7 +669,7 @@ Future<List<String>?> _runNmapScan({
   String? dialogTitle,
   bool showAddButton = false,
 }) async {
-  final StreamController<String> logStream = StreamController<String>();
+  final StreamController<String> logStream = StreamController<String>.broadcast();
   final args = ['-sV', '-sC', '-O', '-A', '-T4', '--reason', '-Pn', address];
   final List<String> lines = [
     '[SYSTEM] Initializing Deep Infrastructure Scan...',
@@ -827,7 +837,7 @@ Future<List<String>?> _runNmapScan({
                     },
                     child: const Text('DISMISS'),
                   ),
-                  if (showAddButton && snapshot.data == 'DONE')
+                  if (showAddButton && isDone)
                     FilledButton.icon(
                       onPressed: () {
                         addNode = true;

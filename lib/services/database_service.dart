@@ -27,8 +27,9 @@ class DatabaseService {
 
     _db = await openDatabase(
       dbPath,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -65,7 +66,10 @@ class DatabaseService {
 
         -- Integration Fields
         discord_webhook_url TEXT,
-        slack_webhook_url TEXT
+        slack_webhook_url TEXT,
+
+        -- Runtime State
+        consecutive_failures INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -95,6 +99,12 @@ class DatabaseService {
     
     // Index for fast history lookups
     await db.execute('CREATE INDEX idx_history_device_timestamp ON history (device_id, timestamp DESC)');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE devices ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   // --- Devices ---
@@ -152,22 +162,6 @@ class DatabaseService {
 
   Future<List<StatusHistory>> getDeviceHistory(String deviceId, {int limit = 100, int offset = 0}) async {
     if (_db == null) await init();
-    final List<Map<String, dynamic>> maps = await _db!.query(
-      'history',
-      where: 'device_id = ?',
-      whereArgs: [deviceId],
-      orderBy: 'timestamp ASC', // Keep consistent with existing logic (oldest first in list usually, but UI might reverse)
-      // Actually, model usually keeps list in append order. 
-      // To get "latest", we might query DESC limit X, then reverse back.
-      // But standard append list:
-    );
-    
-    // Optimizing: if list is huge, we only fetch what we need.
-    // However, the current app architecture expects `device.history` to be a List in memory.
-    // For now, we will load "recent" history on app load, and "load more" will fetch from DB.
-    
-    // For this specific method, let's fetch strictly sorted by time.
-    // If limit is small, we probably want the *latest* entries.
     final rows = await _db!.query(
       'history',
       where: 'device_id = ?',
@@ -264,6 +258,7 @@ class DatabaseService {
       'dns_record_type': d.dnsRecordType,
       'discord_webhook_url': d.discordWebhookUrl,
       'slack_webhook_url': d.slackWebhookUrl,
+      'consecutive_failures': d.consecutiveFailures,
     };
   }
 
@@ -295,6 +290,7 @@ class DatabaseService {
       dnsRecordType: m['dns_record_type'],
       discordWebhookUrl: m['discord_webhook_url'],
       slackWebhookUrl: m['slack_webhook_url'],
+      consecutiveFailures: (m['consecutive_failures'] as int?) ?? 0,
     );
   }
 }
